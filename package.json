@@ -1,0 +1,22 @@
+{
+  "name": "vibewars",
+  "version": "0.1.0",
+  "description": "Multiplayer vibe coding battles: same brief, same clock, different models",
+  "main": "server.js",
+  "license": "MIT",
+  "author": "Naod Tadele",
+  "repository": { "type": "git", "url": "git+https://github.com/naodt1/vibewars.git" },
+  "homepage": "https://github.com/naodt1/vibewars#readme",
+  "bugs": { "url": "https://github.com/naodt1/vibewars/issues" },
+  "keywords": ["game", "multiplayer", "websocket", "llm", "vibe-coding", "party-game"],
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "node e2e-test.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  }
+}
