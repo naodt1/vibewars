@@ -29,7 +29,9 @@
     "dev": "node --env-file-if-exists=.env server.js",
     "test": "node e2e-test.js",
     "db": "supabase db push",
-    "test:security": "node security-test.js"
+    "test:security": "node security-test.js",
+    "test:modes": "node modes-test.js",
+    "test:all": "npm test && npm run test:security && npm run test:modes"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.1",

@@ -190,13 +190,15 @@ function tokenMatches(stored, supplied) {
   return crypto.timingSafeEqual(a, b);
 }
 
-function createLobby(name) {
+function createLobby(name, mode = 'versus') {
   let id = newId();
   while (lobbies.has(id)) id = newId();
   const firstPrompt = generatePrompt('RANDOM');
+  const solo = mode === 'solo';
   const lobby = {
     id,
-    name: name || `Lobby ${id}`,
+    mode, // 'versus' (a real battle) | 'solo' (private practice, no scoring)
+    name: name || (solo ? 'Practice run' : `Lobby ${id}`),
     hostId: null,
     topic: 'RANDOM', // host's filter, not necessarily the rolled prompt's topic
     level: firstPrompt.level,
@@ -204,7 +206,8 @@ function createLobby(name) {
     challenge: firstPrompt.text,
     durationMinutes: firstPrompt.suggestedMinutes,
     minutesOverridden: false,
-    phase: 'lobby', // lobby | active | reveal | results
+    // lobby | active | reveal | results, plus 'practice' as the solo terminus
+    phase: 'lobby',
     round: 0, // bumped every start; lets clients invalidate cached reveal tiles
     startedAt: null,
     endsAt: null,
@@ -212,9 +215,19 @@ function createLobby(name) {
     participants: new Map(), // pid -> participant
     votes: new Map(), // voterId -> Map<targetId, scores>
     botTimers: [],
+    // Watchers. Held as raw sockets rather than participants: they take no
+    // seat, cast no ballot and count for nothing in scoring. Solo runs are
+    // private, so they never accept any.
+    spectators: new Set(),
+    spectatorTimer: null,
   };
   lobbies.set(id, lobby);
   return lobby;
+}
+
+/** Practice runs are private: never listed, never watchable, never archived. */
+function isSolo(lobby) {
+  return lobby.mode === 'solo';
 }
 
 /** Anonymous ids come from the browser, so treat them as untrusted text. */
@@ -278,7 +291,7 @@ function scheduleDeparture(lobby, p) {
     }
     if (lobby.participants.size === 0) {
       clearInterval(lobby.timer);
-      lobbies.delete(lobby.id);
+      closeLobby(lobby);
       return;
     }
     broadcast(lobby);
@@ -340,7 +353,10 @@ function computeScores(lobby) {
 // -------------------------------------------------------- state -> wire ----
 
 function participantPublic(lobby, p, viewerId) {
-  const revealing = lobby.phase === 'reveal' || lobby.phase === 'results';
+  // 'practice' is a solo lobby's terminus: there is exactly one participant and
+  // it is the viewer, so handing back their own code reveals nothing.
+  const revealing =
+    lobby.phase === 'reveal' || lobby.phase === 'results' || lobby.phase === 'practice';
   const base = {
     id: p.id,
     name: p.name,
@@ -381,12 +397,32 @@ function votingProgress(lobby) {
   return { expected, cast };
 }
 
+/* A watcher's view. Same shape as a player's so the client can reuse its
+ * renderers, with two differences: `spectating` is set, and during the build
+ * phase every player's live draft is included. That draft is exactly what a
+ * rival must never see, so it is only ever attached here, never in the
+ * participant snapshot. */
+function spectatorSnapshot(lobby) {
+  const snap = snapshotFor(lobby, null);
+  snap.spectating = true;
+  if (lobby.phase === 'active') {
+    const drafts = {};
+    for (const p of lobby.participants.values()) {
+      drafts[p.id] = p.submitted ? p.code || '' : p.draft || '';
+    }
+    snap.drafts = drafts;
+  }
+  return snap;
+}
+
 function snapshotFor(lobby, viewerId) {
   return {
     type: 'state',
     serverNow: Date.now(),
+    spectators: lobby.spectators.size,
     lobby: {
       id: lobby.id,
+      mode: lobby.mode,
       name: lobby.name,
       phase: lobby.phase,
       round: lobby.round,
@@ -421,6 +457,54 @@ function broadcast(lobby) {
   for (const p of lobby.participants.values()) {
     if (p.ws) send(p.ws, snapshotFor(lobby, p.id));
   }
+  broadcastSpectators(lobby);
+}
+
+function broadcastSpectators(lobby) {
+  if (!lobby.spectators.size) return;
+  const snap = spectatorSnapshot(lobby);
+  for (const ws of lobby.spectators) send(ws, snap);
+}
+
+/* Drafts change on every keystroke, which is far too often to broadcast. While
+ * anyone is watching a live build, push the current state on a fixed tick
+ * instead: fast enough to feel live, slow enough to stay cheap. */
+const SPECTATOR_TICK_MS = 1500;
+
+function startSpectatorFeed(lobby) {
+  if (lobby.spectatorTimer) return;
+  lobby.spectatorTimer = setInterval(() => {
+    if (!lobby.spectators.size || lobby.phase !== 'active') return stopSpectatorFeed(lobby);
+    broadcastSpectators(lobby);
+  }, SPECTATOR_TICK_MS);
+}
+
+function stopSpectatorFeed(lobby) {
+  clearInterval(lobby.spectatorTimer);
+  lobby.spectatorTimer = null;
+}
+
+/** Tear a lobby down, releasing anyone watching it back to the match list. */
+function closeLobby(lobby) {
+  stopSpectatorFeed(lobby);
+  for (const ws of lobby.spectators) {
+    ws.spectatingId = null;
+    send(ws, { type: 'match_over', reason: 'That match has finished.' });
+  }
+  lobby.spectators.clear();
+  lobbies.delete(lobby.id);
+}
+
+function dropSpectator(ws) {
+  const lobby = ws.spectatingId ? lobbies.get(ws.spectatingId) : null;
+  ws.spectatingId = null;
+  if (!lobby) return;
+  lobby.spectators.delete(ws);
+  if (!lobby.spectators.size) stopSpectatorFeed(lobby);
+  // Players see the watcher count, so it has to settle when someone leaves.
+  for (const p of lobby.participants.values()) {
+    if (p.ws) send(p.ws, snapshotFor(lobby, p.id));
+  }
 }
 
 // ------------------------------------------------------------ lifecycle ----
@@ -436,6 +520,7 @@ function startRound(lobby) {
     if (Date.now() >= lobby.endsAt) lockSubmissions(lobby);
   }, 500);
   scheduleBotSubmissions(lobby); // no-op when the lobby has no fake players
+  if (lobby.spectators.size) startSpectatorFeed(lobby);
   broadcast(lobby);
 }
 
@@ -463,7 +548,15 @@ function lockSubmissions(lobby) {
       p.remainingMsAtSubmit = 0;
     }
   }
+  if (isSolo(lobby)) {
+    // Practice has nobody to judge it, so it ends at your own result.
+    lobby.phase = 'practice';
+    stopSpectatorFeed(lobby);
+    broadcast(lobby);
+    return;
+  }
   lobby.phase = 'reveal';
+  stopSpectatorFeed(lobby); // watchers now follow the reveal, not the drafts
   scheduleBotVotes(lobby);
   broadcast(lobby);
 }
@@ -474,8 +567,11 @@ function maybeAdvanceToReveal(lobby) {
   if (all.length > 0 && all.every((p) => p.submitted)) {
     clearInterval(lobby.timer);
     lobby.timer = null;
-    lobby.phase = 'reveal';
-    scheduleBotVotes(lobby);
+    stopSpectatorFeed(lobby);
+    // Submitting early ends a practice run the same way the buzzer does: at
+    // your own result, with nothing to vote on.
+    lobby.phase = isSolo(lobby) ? 'practice' : 'reveal';
+    if (!isSolo(lobby)) scheduleBotVotes(lobby);
   }
 }
 
@@ -518,7 +614,9 @@ function maybeAdvanceToResults(lobby) {
 function finishBattle(lobby) {
   if (lobby.phase === 'results') return;
   lobby.phase = 'results';
-  if (!lobby.recorded) {
+  // Practice is unscored and private, so it never reaches the archive or the
+  // public standings.
+  if (!lobby.recorded && !isSolo(lobby)) {
     lobby.recorded = true;
     const standings = computeScores(lobby);
     archive.recordBattle(lobby, standings).catch(() => {});
@@ -720,6 +818,46 @@ function handle(ws, msg) {
       return;
     }
 
+    // A private practice run: one player, no bots, no ballots, no archive.
+    case 'solo': {
+      if (ws.lobbyId) return fail(ws, 'Leave your current lobby first.');
+      if (lobbies.size >= MAX_LOBBIES) return fail(ws, 'Too many lobbies open. Try again shortly.');
+      const name = cleanText(msg.name, MAX_NAME) || 'You';
+      const tool = cleanText(msg.tool, MAX_TOOL) || 'Unspecified';
+      const created = createLobby('Practice run', 'solo');
+      const p = makeParticipant(name, tool, false, cleanPlayerId(msg.playerId), msg.verified === true);
+      created.hostId = p.id;
+      created.participants.set(p.id, p);
+      attach(ws, created, p);
+      broadcast(created);
+      return;
+    }
+
+    // Watching takes no seat, so it deliberately does not go through attach().
+    case 'spectate': {
+      if (ws.lobbyId) return fail(ws, 'Leave your lobby before watching another.');
+      const target = lobbies.get(cleanText(msg.lobbyId, 16).toUpperCase());
+      if (!target) return fail(ws, 'No match with that ID.');
+      if (isSolo(target)) return fail(ws, 'Practice runs are private.');
+      dropSpectator(ws); // moving between matches
+      target.spectators.add(ws);
+      ws.spectatingId = target.id;
+      send(ws, { type: 'spectating', lobbyId: target.id });
+      send(ws, spectatorSnapshot(target));
+      if (target.phase === 'active') startSpectatorFeed(target);
+      // Let the players know someone is watching.
+      for (const p of target.participants.values()) {
+        if (p.ws) send(p.ws, snapshotFor(target, p.id));
+      }
+      return;
+    }
+
+    case 'stop_spectate': {
+      dropSpectator(ws);
+      send(ws, { type: 'stopped_spectating' });
+      return;
+    }
+
     case 'join': {
       if (ws.lobbyId) return fail(ws, 'Leave your current lobby first.');
       const target = lobbies.get(cleanText(msg.lobbyId, 16).toUpperCase());
@@ -793,6 +931,7 @@ function handle(ws, msg) {
 
     case 'add_bot': {
       if (!isHost) return fail(ws, 'Only the host can add fake players.');
+      if (isSolo(lobby)) return fail(ws, 'Practice runs are just you.');
       if (lobby.phase !== 'lobby') return fail(ws, 'Add fake players before the battle starts.');
       if (lobby.participants.size >= MAX_PARTICIPANTS) {
         return fail(ws, `Lobby is full (${MAX_PARTICIPANTS} max).`);
@@ -827,7 +966,7 @@ function handle(ws, msg) {
         // Only fake players left: tear the lobby down.
         clearInterval(lobby.timer);
         clearBotTimers(lobby);
-        lobbies.delete(lobby.id);
+        closeLobby(lobby);
         return;
       }
       broadcast(lobby);
@@ -838,7 +977,9 @@ function handle(ws, msg) {
       if (!isHost) return fail(ws, 'Only the host can start the battle.');
       if (lobby.phase !== 'lobby') return fail(ws, 'Battle already started.');
       if (!lobby.challenge.trim()) return fail(ws, 'Set a challenge prompt first.');
-      if (lobby.participants.size < MIN_PARTICIPANTS && !msg.allowUnderMin) {
+      // A practice run is meant to be one person, so the roster floor does not
+      // apply to it.
+      if (!isSolo(lobby) && lobby.participants.size < MIN_PARTICIPANTS && !msg.allowUnderMin) {
         return fail(
           ws,
           `Need ${MIN_PARTICIPANTS} participants (have ${lobby.participants.size}). Tick "allow under ${MIN_PARTICIPANTS}" to start anyway.`
@@ -943,14 +1084,25 @@ app.use((_req, res, next) => {
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/api/lobbies', (_req, res) => {
   res.json(
-    [...lobbies.values()].map((l) => ({
-      id: l.id,
-      name: l.name,
-      phase: l.phase,
-      participants: l.participants.size,
-      maxParticipants: MAX_PARTICIPANTS,
-      joinable: l.phase === 'lobby' && l.participants.size < MAX_PARTICIPANTS,
-    }))
+    [...lobbies.values()]
+      .filter((l) => !isSolo(l)) // practice runs are private
+      .map((l) => ({
+        id: l.id,
+        name: l.name,
+        phase: l.phase,
+        participants: l.participants.size,
+        maxParticipants: MAX_PARTICIPANTS,
+        joinable: l.phase === 'lobby' && l.participants.size < MAX_PARTICIPANTS,
+        // Anything past the lobby has something to look at.
+        watchable: l.phase !== 'lobby',
+        spectators: l.spectators.size,
+        round: l.round,
+        topic: l.prompt ? l.prompt.topic : null,
+        levelName: l.prompt ? l.prompt.levelName : null,
+        task: l.prompt ? l.prompt.task : null,
+        endsAt: l.phase === 'active' ? l.endsAt : null,
+        serverNow: Date.now(),
+      }))
   );
 });
 
@@ -1025,6 +1177,10 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    // A watcher holds no seat, so it just drops off the set. Doing this first
+    // means a socket that was watching never falls through to the participant
+    // teardown below.
+    dropSpectator(ws);
     const lobby = ws.lobbyId ? lobbies.get(ws.lobbyId) : null;
     if (!lobby) return;
     const p = lobby.participants.get(ws.participantId);

@@ -1019,6 +1019,21 @@ function onMessage(msg) {
     }
     return;
   }
+  if (msg.type === 'spectating') {
+    // Watching is not a seat, so nothing goes into sessionStorage: a reload
+    // drops you back to the match list rather than resuming a phantom player.
+    me = null;
+    showError('');
+    return;
+  }
+  if (msg.type === 'stopped_spectating' || msg.type === 'match_over') {
+    state = null;
+    clearInterval(spectateTimer);
+    spectateBuiltFor = null;
+    if (msg.reason) showError(msg.reason);
+    showWatch();
+    return;
+  }
   if (msg.type === 'joined') {
     me = msg.participantId;
     sessionStorage.setItem(
@@ -1086,6 +1101,9 @@ function myParticipant() {
 }
 
 function render() {
+  // Watching is a different job from playing: no seat, no controls, no votes.
+  if (state.spectating) return renderSpectate();
+
   const { lobby, participants } = state;
   const mine = myParticipant();
   const isHost = lobby.hostId === me;
@@ -1101,6 +1119,8 @@ function render() {
     resetSandbox();
     refreshSandboxPreview();
   }
+  // Submitting early leaves the round timer running, and it owns the tab title.
+  if (lobby.phase !== 'active') clearInterval(countdownTimer);
 
   if (lobby.phase === 'lobby') {
     show('lobby');
@@ -1114,6 +1134,9 @@ function render() {
   } else if (lobby.phase === 'results') {
     show('results');
     renderResults(lobby, participants);
+  } else if (lobby.phase === 'practice') {
+    show('practice');
+    renderPractice(lobby, mine);
   }
 
   if (phaseChanged) {
@@ -1125,9 +1148,22 @@ function render() {
 // --- waiting room ---
 
 function renderLobby(lobby, participants, isHost) {
-  $('lobbyHeading').textContent = lobby.name;
+  const solo = lobby.mode === 'solo';
+  $('lobbyHeading').textContent = solo ? 'Practice run' : lobby.name;
   $('lobbyIdOut').textContent = lobby.id;
   $('lobbyCount').textContent = `${participants.length}/${lobby.maxParticipants}`;
+
+  // A practice run has no roster to fill, nobody to invite and no fake players
+  // to stand in, so all of that chrome comes off.
+  const lobbyOnly = document.querySelectorAll('[data-versus-only]');
+  lobbyOnly.forEach((el) => { el.hidden = solo; });
+  $('addBotBtn').style.display = solo ? 'none' : '';
+  $('allowUnderMin').closest('label').style.display = solo ? 'none' : '';
+  if (solo) {
+    $('startBtn').textContent = 'Start the clock →';
+    return renderSoloSetup(lobby);
+  }
+  $('startBtn').textContent = 'Start the battle';
 
   const filled = participants
     .map(
@@ -1185,6 +1221,20 @@ function renderLobby(lobby, participants, isHost) {
 
 let lastPromptTask = null;
 
+/** Practice setup: the brief controls and the clock, and nothing about a roster. */
+function renderSoloSetup(lobby) {
+  $('lobbyParticipants').innerHTML = '';
+  $('rosterControls').style.display = 'none';
+  $('hostSetup').style.display = 'block';
+  $('guestWait').style.display = 'none';
+  syncPromptControls(lobby);
+  if (document.activeElement !== $('minutesInput')) {
+    $('minutesInput').value = lobby.durationMinutes;
+  }
+  renderPromptCard($('promptCardLobby'), lobby);
+  $('durationOut').textContent = lobby.durationMinutes;
+}
+
 /** Render the rolled brief into one of the prompt cards. */
 function renderPromptCard(el, lobby) {
   const p = lobby.prompt;
@@ -1238,12 +1288,15 @@ function syncPromptControls(lobby) {
 }
 
 function renderNav(lobby, mine) {
-  const phase = {
-    lobby: 'In the lobby',
-    active: 'Battle live',
-    reveal: 'Judging',
-    results: 'Results',
-  }[lobby.phase];
+  const phase = state.spectating
+    ? 'Watching'
+    : {
+        lobby: lobby.mode === 'solo' ? 'Practice' : 'In the lobby',
+        active: lobby.mode === 'solo' ? 'Practising' : 'Battle live',
+        reveal: 'Judging',
+        results: 'Results',
+        practice: 'Practice done',
+      }[lobby.phase];
   // "Not in a lobby" tells you nothing you cannot already see, so the chip only
   // appears once you are actually in one.
   $('navPhase').hidden = false;
@@ -1259,6 +1312,8 @@ function renderNav(lobby, mine) {
 
 function renderActive(lobby, mine, isHost) {
   renderPromptCard($('promptCardActive'), lobby);
+  // Nobody to race in a practice run, so the roster strip has nothing to say.
+  document.querySelector('.work-bar-side').hidden = lobby.mode === 'solo';
   $('forceEndBtn').style.display = isHost ? 'inline-flex' : 'none';
   const locked = !!mine?.submitted;
   $('codeInput').readOnly = locked;
@@ -1499,12 +1554,14 @@ function buildVoteForm(p, lobby) {
 // --- leaderboard ---
 
 /** Winner banner above the leaderboard, with a one-shot confetti burst. */
-function renderWinner(lobby, rows) {
-  const banner = $('winnerBanner');
+/** The winner banner on its own. Shared with the spectator view, which wants
+ *  the banner but not the confetti - that is the players' moment, not a
+ *  watcher's. */
+function renderWinnerInto(banner, rows) {
   const winner = rows[0];
   if (!winner) {
     banner.innerHTML = '';
-    return;
+    return null;
   }
   const tied = rows[1] && Math.abs(rows[1].total - winner.total) < 1e-9;
   const scored = winner.total > 0;
@@ -1524,11 +1581,173 @@ function renderWinner(lobby, rows) {
       : '') +
     '</div></div>';
 
+  return scored;
+}
+
+function renderWinner(lobby, rows) {
+  const scored = renderWinnerInto($('winnerBanner'), rows);
   // Once per round, and never for a round where nobody actually scored.
   const key = `${lobby.id}:${lobby.round}`;
   if (celebratedRound !== key && scored) {
     celebratedRound = key;
     fireConfetti();
+  }
+}
+
+/* ------------------------------------------------------------ practice -- *
+ * Solo runs end here. There is nothing to score and nobody to score it, so the
+ * screen is just the brief and what you actually built against it. */
+function renderPractice(lobby, mine) {
+  document.title = 'Practice done - vibewars';
+  renderPromptCard($('promptCardPractice'), lobby);
+  const code = (mine && mine.code) || '';
+  const blank = !code.trim();
+
+  $('practiceMeta').textContent = blank
+    ? 'Nothing submitted'
+    : `${code.length.toLocaleString()} characters`;
+  $('practiceNote').textContent = blank
+    ? 'The clock beat you and the editor was empty. No shame, the brief is rolled fresh every time.'
+    : 'Unscored and unrecorded, which is the point of practice. Read it back, then go again.';
+  $('practiceFrame').srcdoc = code || '<!-- nothing built -->';
+}
+
+/* ------------------------------------------------------------ watching -- *
+ * A read-only view of somebody else's match. During the build phase the server
+ * sends each player's live draft on a tick; afterwards the same renderers the
+ * players see are reused, minus every control. */
+function renderSpectate() {
+  const { lobby, participants } = state;
+  show('spectate');
+  renderNav(lobby, null);
+
+  const watching = state.spectators || 0;
+  $('spectateTitle').innerHTML =
+    (lobby.phase === 'active' ? '<span class="live-dot"></span>' : '') + esc(lobby.name);
+  $('spectateStatus').textContent =
+    `${PHASE_WORDS[lobby.phase] || lobby.phase} · ${participants.length} building · ` +
+    `${watching} watching`;
+  renderPromptCard($('promptCardSpectate'), lobby);
+
+  const clock = $('spectateClock');
+  if (lobby.phase === 'active') {
+    clock.hidden = false;
+    startSpectateClock(lobby);
+  } else {
+    clock.hidden = true;
+    clearInterval(spectateTimer);
+  }
+
+  const showBoard = lobby.phase === 'results' && state.leaderboard;
+  $('spectateScoresCard').hidden = !showBoard;
+  if (showBoard) renderSpectateBoard(lobby, state.leaderboard);
+  $('spectateWinner').innerHTML = '';
+  if (showBoard) renderWinnerInto($('spectateWinner'), state.leaderboard);
+
+  $('spectateGridTitle').textContent =
+    lobby.phase === 'active' ? 'Builds, live' : 'Submissions';
+  buildSpectateGrid(lobby, participants);
+  document.title =
+    (lobby.phase === 'active' ? 'Watching - ' : 'Watched - ') + lobby.name + ' - vibewars';
+}
+
+const PHASE_WORDS = {
+  lobby: 'Waiting to start',
+  active: 'Building now',
+  reveal: 'Voting',
+  results: 'Finished',
+};
+
+let spectateTimer = null;
+function startSpectateClock(lobby) {
+  clearInterval(spectateTimer);
+  const tick = () => {
+    const left = Math.max(0, lobby.endsAt - serverNow());
+    const mm = String(Math.floor(left / 60000)).padStart(2, '0');
+    const ss = String(Math.floor((left % 60000) / 1000)).padStart(2, '0');
+    $('spectateClock').textContent = `${mm}:${ss} left`;
+    if (left <= 0) clearInterval(spectateTimer);
+  };
+  tick();
+  spectateTimer = setInterval(tick, 250);
+}
+
+function renderSpectateBoard(lobby, rows) {
+  const header =
+    '<tr><th>#</th><th>Name</th><th>Tool</th>' +
+    lobby.criteria.map((c) => `<th>${esc(lobby.criteriaLabels[c])}</th>`).join('') +
+    '<th>Total</th></tr>';
+  $('spectateBoard').innerHTML =
+    header +
+    rows
+      .map(
+        (r, i) =>
+          `<tr class="rank-${i + 1}"><td>${i + 1}</td>` +
+          `<td>${esc(r.name)}${r.dnf ? ' <span class="chip chip-accent">DNF</span>' : ''}</td>` +
+          `<td>${esc(r.tool)}</td>` +
+          lobby.criteria.map((c) => `<td>${r.averages[c].toFixed(2)}</td>`).join('') +
+          `<td class="total">${r.total.toFixed(2)}</td></tr>`
+      )
+      .join('');
+}
+
+/* Tiles are rebuilt only when the roster or phase changes; the iframes are
+ * updated in place on every tick so a live build does not flicker. */
+let spectateBuiltFor = null;
+function buildSpectateGrid(lobby, participants) {
+  const host = $('spectateGrid');
+  const key = `${lobby.id}:${lobby.round}:${lobby.phase}:${participants.map((p) => p.id).join(',')}`;
+  if (spectateBuiltFor !== key) {
+    spectateBuiltFor = key;
+    host.innerHTML = '';
+    for (const p of participants) {
+      const tile = document.createElement('div');
+      tile.className = 'tile';
+      tile.dataset.spectateTile = p.id;
+      tile.innerHTML =
+        '<div class="tile-head">' +
+        `<span class="tile-name">${esc(p.name)}</span>` +
+        `<span class="tile-tool">${esc(p.tool)}</span>` +
+        (p.isBot ? '<span class="chip chip-muted">Fake</span>' : '') +
+        (p.verified ? '<span class="chip chip-accent">&#10003; Verified</span>' : '') +
+        '<span class="chip chip-quiet" data-tile-status></span>' +
+        '</div>';
+      const frame = document.createElement('iframe');
+      // Same isolation as every other rendering of untrusted submissions.
+      frame.setAttribute('sandbox', 'allow-scripts allow-forms');
+      frame.setAttribute('referrerpolicy', 'no-referrer');
+      frame.dataset.spectateFrame = p.id;
+      tile.appendChild(frame);
+      host.appendChild(tile);
+    }
+    animateIn(host, 'anim-stagger');
+  }
+
+  for (const p of participants) {
+    const frame = host.querySelector(`[data-spectate-frame="${p.id}"]`);
+    const status = host.querySelector(`[data-spectate-tile="${p.id}"] [data-tile-status]`);
+    if (!frame) continue;
+    const live = state.drafts ? state.drafts[p.id] : undefined;
+    const code = lobby.phase === 'active' ? live || '' : p.code || '';
+    // Reassigning srcdoc reloads the frame, so only do it when it changed.
+    if (frame.dataset.rendered !== code) {
+      frame.dataset.rendered = code;
+      frame.srcdoc = code || '<!-- nothing yet -->';
+    }
+    if (status) {
+      status.textContent =
+        lobby.phase === 'active'
+          ? p.submitted
+            ? 'Locked in'
+            : code.trim()
+              ? 'Building'
+              : 'Blank so far'
+          : p.dnf
+            ? 'DNF'
+            : p.autoSubmitted
+              ? 'Buzzer'
+              : 'Submitted';
+    }
   }
 }
 
@@ -1643,7 +1862,7 @@ function renderIdentity() {
   const nameEl = $('identityName');
   if (nameEl) nameEl.textContent = identity.nickname;
   // Keep the name the wizard will submit in step with the stored one.
-  for (const id of ['createName', 'joinName']) {
+  for (const id of ['createName', 'joinName', 'soloName']) {
     const input = $(id);
     if (input && document.activeElement !== input) input.value = identity.nickname;
   }
@@ -2018,6 +2237,20 @@ const FLOWS = {
       });
     },
   },
+  solo: {
+    title: 'Practice run',
+    submitLabel: 'Start practising &#8599;',
+    send: () => {
+      setNickname($('soloName').value);
+      sendMsg({
+        type: 'solo',
+        name: $('soloName').value,
+        tool: $('soloTool').value,
+        verified: !!providerOfModel($('soloTool').value),
+        playerId: identity.playerId,
+      });
+    },
+  },
 };
 
 let wizFlow = null;
@@ -2240,7 +2473,21 @@ document.querySelectorAll('.tab').forEach((tab) => {
 });
 
 $('menuPlay').onclick = showPlay;
-$('playBack').onclick = showChoice;
+$('menuSolo').onclick = () => {
+  show('entry');
+  startFlow('solo');
+};
+$('menuWatch').onclick = showWatch;
+$('watchBack').onclick = () => {
+  clearInterval(matchPoll);
+  matchPoll = null;
+  show('entry');
+  showChoice();
+};
+$('refreshMatches').onclick = () => loadMatches(true);
+$('spectateLeave').onclick = () => sendMsg({ type: 'stop_spectate' });
+$('practiceQuit').onclick = () => sendMsg({ type: 'leave' });
+$('practiceAgain').onclick = () => sendMsg({ type: 'reset' });
 $('chooseCreate').onclick = () => startFlow('create');
 $('chooseJoin').onclick = () => startFlow('join');
 
@@ -2267,6 +2514,7 @@ document.querySelectorAll('.wiz-step input[type="text"]').forEach((input) => {
 
 registerPicker('createToolPicker', 'createTool');
 registerPicker('joinToolPicker', 'joinTool');
+registerPicker('soloToolPicker', 'soloTool');
 
 $('addBotBtn').onclick = () => sendMsg({ type: 'add_bot' });
 
@@ -2276,6 +2524,70 @@ $('leaveBtn').onclick = () => {
 };
 
 $('refreshLobbies').onclick = loadLobbies;
+
+/* ------------------------------------------------------- watch a match -- */
+let matchPoll = null;
+let lastMatchSignature = null;
+
+function showWatch() {
+  show('watch');
+  showError('');
+  loadMatches(true);
+  clearInterval(matchPoll);
+  matchPoll = setInterval(loadMatches, 4000);
+}
+
+async function loadMatches(force = false) {
+  // Stop polling once we are actually watching something.
+  if (state && state.spectating) return;
+  let list = [];
+  try {
+    const res = await fetch('/api/lobbies');
+    list = await res.json();
+  } catch (_) {
+    return; // server restarting; the next tick will pick it up
+  }
+  const live = list.filter((l) => l.watchable);
+  const signature = JSON.stringify(live);
+  if (!force && signature === lastMatchSignature) return;
+  lastMatchSignature = signature;
+
+  $('matchList').innerHTML =
+    live
+      .map((l) => {
+        const left = l.endsAt ? Math.max(0, l.endsAt - l.serverNow) : 0;
+        const mins = Math.floor(left / 60000);
+        const secs = String(Math.floor((left % 60000) / 1000)).padStart(2, '0');
+        const phase =
+          l.phase === 'active'
+            ? `<span class="live-dot"></span>Building, ${mins}:${secs} left`
+            : l.phase === 'reveal'
+              ? 'Voting now'
+              : 'Finished';
+        return (
+          `<li><span class="chip chip-accent">${esc(l.id)}</span>` +
+          `<span class="who">${esc(l.name)}</span>` +
+          `<span class="meta">${phase}<span class="meta-sep">/</span>` +
+          `${l.participants} building<span class="meta-sep">/</span>` +
+          `${l.spectators} watching</span>` +
+          `<button class="btn btn-primary" data-watch="${esc(l.id)}" style="margin-left:auto">Watch</button>` +
+          (l.task ? `<span class="match-task" style="flex-basis:100%">${esc(l.task)}</span>` : '') +
+          '</li>'
+        );
+      })
+      .join('') ||
+    '<li class="slot-empty">Nothing live right now. Start a battle and it shows up here.</li>';
+
+  $('matchList')
+    .querySelectorAll('[data-watch]')
+    .forEach((btn) => {
+      btn.onclick = () => {
+        clearInterval(matchPoll);
+        matchPoll = null;
+        sendMsg({ type: 'spectate', lobbyId: btn.dataset.watch });
+      };
+    });
+}
 
 async function loadLobbies() {
   let list = [];

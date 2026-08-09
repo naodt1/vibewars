@@ -173,6 +173,9 @@ a { color: inherit; }
 }
 .logo span { color: var(--accent); }
 .nav-right { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; }
+/* The label is short but the column is tight; wrapping it onto two lines made
+   the whole navbar taller. */
+.nav-right .btn { white-space: nowrap; }
 
 .wrap { max-width: 1120px; margin: 0 auto; padding: 56px 28px 120px; }
 
@@ -482,6 +485,126 @@ textarea[readonly] { background: var(--field-locked); color: var(--muted); }
 }
 .countdown.danger { color: var(--accent); }
 
+/* --------------------------------------------------------- workspace -- */
+/* The build phase wants width more than it wants a reading measure, so it
+   escapes .wrap's column and runs to the edges of the viewport instead. */
+.workspace {
+  /* One knob for the height of both work surfaces, so the preview, the editor
+     and the chat log all stay level. */
+  --work-h: clamp(380px, calc(100vh - 400px), 760px);
+  width: calc(100vw - 56px);
+  max-width: 1760px;
+  margin-left: calc(50% - min(50vw - 28px, 880px));
+}
+@media (min-width: 1560px) {
+  /* The rails sit a fixed 600px either side of centre, so once they appear the
+     workspace has to live between them. 28px of daylight each side, and the
+     rails stay on top (they are z-index 95) rather than getting covered. */
+  .workspace {
+    width: min(1144px, calc(100vw - 56px));
+    margin-left: calc(50% - min(572px, calc(50vw - 28px)));
+  }
+}
+@media (max-width: 900px) { .workspace { width: 100%; margin-left: 0; } }
+
+.work-bar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+@media (max-width: 1100px) { .work-bar { grid-template-columns: 1fr; } }
+
+/* The clock is the thing you look up at, so it gets its own panel. */
+.work-clock {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 16px 26px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  min-width: 190px;
+}
+.work-clock-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.work-clock .countdown { font-size: 52px; }
+/* Under 30s the whole panel turns, not just the digits. */
+.work-clock:has(.countdown.danger) { border-color: var(--accent); background: var(--accent-soft); }
+
+.work-bar-side {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 16px 22px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  max-width: 340px;
+}
+@media (max-width: 1100px) { .work-bar-side { max-width: none; } }
+
+/* The brief, in the accent so it reads as the thing you are working against
+   rather than another grey card. */
+.brief-strip {
+  display: flex;
+  flex-direction: column;
+  /* Top-aligned, not centred: once it scrolls, centring would start you in the
+     middle of your own brief. */
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 16px 22px;
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, var(--accent) 0%, #E8611B 100%);
+  color: var(--on-accent);
+  min-width: 0;
+  /* A long brief scrolls inside its own container rather than pushing the
+     workspace off the bottom of the screen. */
+  max-height: 300px;
+  overflow-y: auto;
+}
+.brief-strip .prompt-label { margin-top: 2px; }
+.brief-strip .prompt-vibe { margin: 2px 0 0; }
+.brief-strip .prompt-constraints { margin: 4px 0 0; }
+/* The "Challenge" tag is redundant here: the whole orange panel is the
+   challenge, and the row it costs is better spent on the brief itself. */
+.brief-strip .prompt-tag { display: none; }
+.brief-strip .prompt-meta { display: flex; gap: 8px; flex-wrap: wrap; }
+.brief-strip .chip { background: rgba(0, 0, 0, 0.16); color: var(--on-accent); }
+.brief-strip .prompt-label { color: rgba(23, 17, 12, 0.62); }
+.brief-strip .prompt-context {
+  font-size: clamp(19px, 2vw, 26px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  margin: 0;
+  color: var(--on-accent);
+}
+.brief-strip .prompt-task {
+  background: rgba(0, 0, 0, 0.14);
+  border-radius: var(--radius-sm);
+  border-left: 0;
+  padding: 12px 16px;
+  margin: 0;
+}
+.brief-strip .prompt-task-text {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--on-accent);
+}
+.brief-strip .prompt-vibe,
+.brief-strip .prompt-constraints,
+.brief-strip .prompt-constraints li { color: rgba(23, 17, 12, 0.78); font-size: 13px; }
+.brief-strip .prompt-constraints li::before { color: rgba(23, 17, 12, 0.5); }
+
 /* ----------------------------------------------------------- roster/grid -- */
 .roster { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .roster li {
@@ -501,7 +624,32 @@ textarea[readonly] { background: var(--field-locked); color: var(--muted); }
   font-size: 13px;
 }
 
-#grid, #resultsGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 20px; }
+#grid, #resultsGrid, #spectateGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 20px; }
+
+/* ------------------------------------------------- practice + spectating -- */
+#practiceFrame {
+  display: block;
+  width: 100%;
+  height: min(58vh, 520px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  /* Entries are written against a blank page, so the frame stays white. */
+  background: #fff;
+}
+/* A watched build refreshes on a tick, so mark it as moving rather than final. */
+.live-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: 7px;
+  vertical-align: 1px;
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+@keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+.tile-typing { font-size: 12px; color: var(--faint); }
+.match-task { font-size: 13px; color: var(--muted); }
 #grid.stage { display: block; max-width: none; }
 #grid.stage .tile { display: none; }
 #grid.stage .tile.active { display: block; }
@@ -598,7 +746,9 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
 .sandbox-card { overflow: hidden; }
 .sandbox-grid {
   display: grid;
-  grid-template-columns: minmax(320px, 5fr) 7fr;
+  /* Prompt column stays readable; everything else goes to the output, which is
+     what you actually stare at. */
+  grid-template-columns: minmax(330px, 4fr) minmax(0, 8fr);
   align-items: stretch;
 }
 @media (max-width: 1000px) { .sandbox-grid { grid-template-columns: 1fr; } }
@@ -616,8 +766,9 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
 .chat-log {
   flex: 1;
   overflow-y: auto;
-  min-height: 260px;
-  max-height: 420px;
+  /* Tracks the output pane so the two columns stay level as the window grows. */
+  min-height: 300px;
+  max-height: calc(var(--work-h) - 150px);
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -677,13 +828,16 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
 #sandboxFrame {
   display: block;
   width: 100%;
-  height: 100%;
-  min-height: 420px;
+  height: var(--work-h);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   /* Entries are written against a blank page, so the frame stays white. */
   background: #fff;
 }
+/* The editor matches the preview exactly, so switching tabs does not resize
+   the card under your cursor. */
+#tabCode .editor textarea { height: var(--work-h); }
+#tabCode .editor { height: var(--work-h); }
 
 .sandbox-actions {
   display: flex;
@@ -1519,11 +1673,17 @@ section.visible { display: block; }
           <button class="menu-item" id="menuPlay">
             <span class="menu-num">01</span><span class="menu-label">Play</span><span class="menu-go">&#8594;</span>
           </button>
+          <button class="menu-item" id="menuSolo">
+            <span class="menu-num">02</span><span class="menu-label">Solo</span><span class="menu-go">&#8594;</span>
+          </button>
+          <button class="menu-item" id="menuWatch">
+            <span class="menu-num">03</span><span class="menu-label">Watch</span><span class="menu-go">&#8594;</span>
+          </button>
           <button class="menu-item" data-page="leaderboard">
-            <span class="menu-num">02</span><span class="menu-label">Leaderboard</span><span class="menu-go">&#8594;</span>
+            <span class="menu-num">04</span><span class="menu-label">Leaderboard</span><span class="menu-go">&#8594;</span>
           </button>
           <button class="menu-item" data-page="how">
-            <span class="menu-num">03</span><span class="menu-label">How to play</span><span class="menu-go">&#8594;</span>
+            <span class="menu-num">05</span><span class="menu-label">How to play</span><span class="menu-go">&#8594;</span>
           </button>
         </nav>
       </div>
@@ -1676,6 +1836,25 @@ section.visible { display: block; }
           <div class="picker" id="joinToolPicker"></div>
           <input id="joinTool" type="hidden" />
         </div>
+        <div class="wiz-step" data-flow="solo">
+          <label class="wiz-label" for="soloName">Who are you?</label>
+          <p class="wiz-hint">Only you will see this, but the brief is real and so is the clock.</p>
+          <input id="soloName" type="text" placeholder="Ada" autocomplete="off" />
+          <button type="button" class="nav-link wiz-reroll" data-reroll>&#9861; Re-roll</button>
+        </div>
+        <div class="wiz-step" data-flow="solo" data-picker="true">
+          <span class="wiz-label">What are you bringing?</span>
+          <p class="wiz-hint">Nothing is scored here, but the sandbox needs to know what to talk to.</p>
+          <div class="picker" id="soloToolPicker"></div>
+          <input id="soloTool" type="hidden" />
+        </div>
+        <div class="wiz-step" data-flow="solo" data-optional="true" data-keystep="solo">
+          <span class="wiz-label">Bring your own key?</span>
+          <p class="wiz-hint">Optional, and skippable - you can always paste HTML by hand. With a
+            key you get to prompt your model inside the game.</p>
+          <div class="key-step" id="soloKeyStep"></div>
+        </div>
+
         <div class="wiz-step" data-flow="join" data-optional="true" data-keystep="join">
           <span class="wiz-label">Bring your own key?</span>
           <p class="wiz-hint">Optional, and skippable - you can always paste HTML by hand. With a
@@ -1696,7 +1875,7 @@ section.visible { display: block; }
 <section id="lobby">
   <h2 class="section-title" id="lobbyHeading"></h2>
 
-  <div class="card">
+  <div class="card" data-versus-only>
     <div class="card-head">
       <h3 class="card-title">Lobby code</h3>
       <span class="chip chip-accent" id="lobbyIdOut"></span>
@@ -1746,15 +1925,20 @@ section.visible { display: block; }
 
 <!-- 3. build phase ------------------------------------------------------- -->
 <section id="active">
-  <div class="timer-bar">
-    <div class="countdown" id="countdown">--:--</div>
-    <div>
-      <div class="field-label" style="margin-bottom:10px">Fighters</div>
-      <div class="row" id="submitStatus" style="gap:8px"></div>
+  <!-- The build phase is a workspace, not a page: it breaks out of the reading
+       column so the editor and preview both get real room. -->
+  <div class="workspace">
+    <div class="work-bar">
+      <div class="work-clock">
+        <span class="work-clock-label">Time left</span>
+        <div class="countdown" id="countdown">--:--</div>
+      </div>
+      <div class="brief-strip" id="promptCardActive"></div>
+      <div class="work-bar-side">
+        <span class="field-label" style="margin:0 0 8px">Fighters</span>
+        <div class="row" id="submitStatus" style="gap:6px"></div>
+      </div>
     </div>
-  </div>
-
-  <div class="prompt-card" id="promptCardActive"></div>
 
   <div class="card sandbox-card">
     <div class="card-head">
@@ -1802,6 +1986,7 @@ section.visible { display: block; }
       </div>
     </div>
   </div>
+  </div>
 </section>
 
 <!-- 4 + 5. reveal & voting ----------------------------------------------- -->
@@ -1844,6 +2029,66 @@ section.visible { display: block; }
   <h2 class="section-title">Submissions</h2>
   <div id="resultsGrid"></div>
   <div style="margin-top:28px"><button id="resetBtn" class="btn btn-secondary btn-lg">Run it back &#8635;</button></div>
+</section>
+
+<!-- 7. practice result (solo only, no scoring) --------------------------- -->
+<section id="practice">
+  <h2 class="section-title">Time<em>'s up</em></h2>
+  <div class="card">
+    <div class="card-head">
+      <h3 class="card-title">What you built</h3>
+      <span class="meta" id="practiceMeta"></span>
+    </div>
+    <div class="card-body">
+      <p class="muted" id="practiceNote"></p>
+      <iframe id="practiceFrame" title="Your practice build"
+              sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
+    </div>
+  </div>
+  <div id="promptCardPractice"></div>
+  <div class="row" style="margin-top:28px">
+    <button id="practiceAgain" class="btn btn-primary btn-lg">Another one &#8635;</button>
+    <button id="practiceQuit" class="btn btn-secondary">&#8592; Back to menu</button>
+  </div>
+</section>
+
+<!-- 8. watch: browse live matches --------------------------------------- -->
+<section id="watch">
+  <div class="play-head">
+    <h2 class="section-title" style="margin:0">Live <em>matches</em></h2>
+    <button id="watchBack" class="btn">&#8592; Back</button>
+  </div>
+  <p class="muted" style="margin:-10px 0 22px">Drop in on a battle in progress. You take no seat,
+    cast no vote and nobody has to make room for you.</p>
+  <div class="card">
+    <div class="card-head">
+      <h3 class="card-title">In progress</h3>
+      <button id="refreshMatches" class="btn">Refresh</button>
+    </div>
+    <div class="card-body"><ul class="lobby-list" id="matchList"></ul></div>
+  </div>
+</section>
+
+<!-- 9. spectating a match ----------------------------------------------- -->
+<section id="spectate">
+  <div class="play-head">
+    <div>
+      <h2 class="section-title" style="margin:0" id="spectateTitle">Watching</h2>
+      <p class="muted" style="margin:6px 0 0" id="spectateStatus"></p>
+    </div>
+    <div class="row">
+      <span class="chip chip-accent" id="spectateClock" hidden></span>
+      <button id="spectateLeave" class="btn">&#8592; Stop watching</button>
+    </div>
+  </div>
+  <div id="promptCardSpectate"></div>
+  <div id="spectateWinner"></div>
+  <div class="card" id="spectateScoresCard" hidden>
+    <div class="card-head"><h3 class="card-title">Final scores</h3></div>
+    <div class="card-body table-scroll"><table id="spectateBoard"></table></div>
+  </div>
+  <h2 class="section-title" id="spectateGridTitle">Builds</h2>
+  <div id="spectateGrid"></div>
 </section>
 </div>
 
