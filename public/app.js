@@ -328,8 +328,448 @@ function syncHighlight() {
   layer.scrollLeft = ta.scrollLeft;
 }
 
-/* Model catalogue for the tool picker. Edit this list as models ship; nothing
-   else depends on the exact strings, they are just labels on a tile. */
+/* ------------------------------------------------------------- sandbox -- *
+ * Prompt your own model from inside the round. The call goes browser ->
+ * provider with your own key, exactly like the model-list check: nothing passes
+ * through the vibewars server, so the host never sees a key or a prompt.
+ *
+ * Token counts come back from the provider and are summed for the round. They
+ * are counts, not money: pricing changes, and guessing at it would be worse
+ * than saying nothing. */
+
+const CHAT = {
+  openai: {
+    url: () => 'https://api.openai.com/v1/chat/completions',
+    headers: (key) => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }),
+    body: (model, messages) => ({ model, messages, max_tokens: 4096 }),
+    text: (j) => j.choices?.[0]?.message?.content || '',
+    usage: (j) => ({ in: j.usage?.prompt_tokens || 0, out: j.usage?.completion_tokens || 0 }),
+  },
+  xai: {
+    url: () => 'https://api.x.ai/v1/chat/completions',
+    headers: (key) => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }),
+    body: (model, messages) => ({ model, messages, max_tokens: 4096 }),
+    text: (j) => j.choices?.[0]?.message?.content || '',
+    usage: (j) => ({ in: j.usage?.prompt_tokens || 0, out: j.usage?.completion_tokens || 0 }),
+  },
+  anthropic: {
+    url: () => 'https://api.anthropic.com/v1/messages',
+    headers: (key) => ({
+      'Content-Type': 'application/json',
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    }),
+    // Anthropic takes the system prompt as its own field, not as a message.
+    body: (model, messages) => ({
+      model,
+      max_tokens: 4096,
+      system: messages.find((m) => m.role === 'system')?.content,
+      messages: messages.filter((m) => m.role !== 'system'),
+    }),
+    text: (j) => (j.content || []).filter((c) => c.type === 'text').map((c) => c.text).join(''),
+    usage: (j) => ({ in: j.usage?.input_tokens || 0, out: j.usage?.output_tokens || 0 }),
+  },
+  google: {
+    url: (key, model) =>
+      'https://generativelanguage.googleapis.com/v1beta/models/' +
+      model + ':generateContent?key=' + encodeURIComponent(key),
+    headers: () => ({ 'Content-Type': 'application/json' }),
+    body: (model, messages) => {
+      const sys = messages.find((m) => m.role === 'system');
+      return {
+        systemInstruction: sys ? { parts: [{ text: sys.content }] } : undefined,
+        contents: messages
+          .filter((m) => m.role !== 'system')
+          .map((m) => ({
+            role: m.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: m.content }],
+          })),
+      };
+    },
+    text: (j) => (j.candidates?.[0]?.content?.parts || []).map((x) => x.text || '').join(''),
+    usage: (j) => ({
+      in: j.usageMetadata?.promptTokenCount || 0,
+      out: j.usageMetadata?.candidatesTokenCount || 0,
+    }),
+  },
+};
+
+const sandbox = {
+  messages: [], // the running conversation, system prompt included
+  tokensIn: 0,
+  tokensOut: 0,
+  requests: 0,
+  busy: false,
+  locked: false,
+  controller: null,
+};
+
+/** Build the system prompt from the brief so the model knows the real task. */
+function sandboxSystemPrompt(lobby) {
+  const p = lobby.prompt || {};
+  const lines = [
+    'You are competing in a timed vibe coding battle.',
+    'Return ONE self-contained HTML file and nothing else: no explanation, no commentary.',
+    'Inline all CSS and JavaScript. No frameworks, no build step, no external requests.',
+    '',
+    'CONTEXT: ' + (p.context || ''),
+    'TASK: ' + (p.task || ''),
+  ];
+  if (p.flavour) lines.push('VIBE: ' + p.flavour);
+  if ((p.constraints || []).length) {
+    lines.push('CONSTRAINTS:\n- ' + p.constraints.join('\n- '));
+  }
+  return lines.join('\n');
+}
+
+// A fenced ```html block if there is one, otherwise the whole reply when it
+// already looks like markup.
+const FENCE = new RegExp('```(?:html)?\\s*\\n([\\s\\S]*?)```', 'i');
+const LOOKS_LIKE_HTML = /<(!doctype|html|body|div|h1|section|main|style)\b/i;
+
+function extractHtml(text) {
+  const fenced = text.match(FENCE);
+  if (fenced) return fenced[1].trim();
+  if (LOOKS_LIKE_HTML.test(text)) return text.trim();
+  return null;
+}
+
+/** One completion call. Readable errors, and abortable by the buzzer. */
+async function callModel(providerId, modelId, messages, signal) {
+  const spec = CHAT[providerId];
+  const key = storedKeys()[providerId];
+  if (!spec || !key) throw new Error('No key connected for that provider.');
+
+  const res = await fetch(spec.url(key, modelId), {
+    method: 'POST',
+    headers: spec.headers(key),
+    body: JSON.stringify(spec.body(modelId, messages)),
+    signal,
+  });
+
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const err = await res.json();
+      detail = err.error?.message || err.message || '';
+    } catch (e) {
+      /* error body was not JSON */
+    }
+    if (res.status === 429) throw new Error('Rate limited by the provider. Give it a second.');
+    if ([400, 401, 403].includes(res.status)) {
+      throw new Error(detail || 'The provider rejected that request.');
+    }
+    throw new Error(detail || 'Provider returned ' + res.status + '.');
+  }
+
+  const json = await res.json();
+  return { text: spec.text(json), usage: spec.usage(json) };
+}
+
+function renderUsage() {
+  const el = $('usageMeter');
+  if (!el) return;
+  const total = sandbox.tokensIn + sandbox.tokensOut;
+  el.innerHTML = total
+    ? '<span class="usage-num">' + total.toLocaleString() + '</span> tokens' +
+      '<span class="meta-sep">/</span>' + sandbox.tokensIn.toLocaleString() + ' in' +
+      '<span class="meta-sep">/</span>' + sandbox.tokensOut.toLocaleString() + ' out' +
+      '<span class="meta-sep">/</span>' + sandbox.requests +
+      (sandbox.requests === 1 ? ' call' : ' calls')
+    : 'No calls yet';
+}
+
+function renderChat() {
+  const log = $('chatLog');
+  if (!log) return;
+  const turns = sandbox.messages.filter((m) => m.role !== 'system');
+  if (!turns.length && !sandbox.busy) {
+    log.innerHTML =
+      '<p class="chat-empty">Ask for what you want built. The brief is already in front of the ' +
+      'model, so go straight to the interesting part.</p>';
+    return;
+  }
+  log.innerHTML =
+    turns
+      .map(
+        (m) =>
+          '<div class="turn turn-' + m.role + '">' +
+          '<span class="turn-who">' + (m.role === 'user' ? 'You' : 'Model') + '</span>' +
+          '<div class="turn-body">' + esc((m.display || m.content).slice(0, 4000)) + '</div></div>'
+      )
+      .join('') +
+    (sandbox.busy
+      ? '<div class="turn turn-assistant"><span class="turn-who">Model</span>' +
+        '<div class="turn-body thinking">Thinking<span class="tagline-dots">' +
+        '<i>.</i><i>.</i><i>.</i></span></div></div>'
+      : '');
+  log.scrollTop = log.scrollHeight;
+}
+
+/** Generated HTML lands in the editor, which stays the source of truth. */
+function applyGeneratedHtml(html) {
+  $('codeInput').value = html;
+  syncHighlight();
+  flushDraft();
+  refreshSandboxPreview();
+}
+
+function refreshSandboxPreview() {
+  const frame = $('sandboxFrame');
+  if (frame) frame.srcdoc = $('codeInput').value || '<!-- nothing yet -->';
+}
+
+async function sendPrompt() {
+  if (sandbox.busy || sandbox.locked || !state) return;
+  const input = $('promptInput');
+  const text = input.value.trim();
+  if (!text) return;
+
+  const mine = myParticipant();
+  const provider = providerOfModel(mine && mine.tool);
+  const modelId = modelIdFor(mine && mine.tool);
+  if (!provider || !modelId) {
+    showError('Connect a key for this model on the API keys page to use the sandbox.');
+    return;
+  }
+
+  if (!sandbox.messages.length) {
+    sandbox.messages.push({ role: 'system', content: sandboxSystemPrompt(state.lobby) });
+  }
+  sandbox.messages.push({ role: 'user', content: text });
+  input.value = '';
+  sandbox.busy = true;
+  showError('');
+  renderChat();
+  renderSandboxControls();
+
+  sandbox.controller = new AbortController();
+  try {
+    const out = await callModel(provider, modelId, sandbox.messages, sandbox.controller.signal);
+    sandbox.tokensIn += out.usage.in;
+    sandbox.tokensOut += out.usage.out;
+    sandbox.requests += 1;
+
+    const html = extractHtml(out.text);
+    sandbox.messages.push({
+      role: 'assistant',
+      content: out.text,
+      display: html
+        ? 'Returned ' + html.length.toLocaleString() + ' characters of HTML.'
+        : out.text,
+    });
+    if (html) applyGeneratedHtml(html);
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      sandbox.messages.push({ role: 'assistant', content: '', display: 'Cut off by the buzzer.' });
+    } else {
+      sandbox.messages.pop(); // drop the user turn that never landed
+      showError(err.message);
+    }
+  } finally {
+    sandbox.busy = false;
+    sandbox.controller = null;
+    renderChat();
+    renderUsage();
+    renderSandboxControls();
+  }
+}
+
+/** Time is up, or you submitted: the sandbox goes quiet. */
+function lockSandbox() {
+  if (sandbox.locked) return;
+  sandbox.locked = true;
+  if (sandbox.controller) sandbox.controller.abort();
+  renderSandboxControls();
+}
+
+function resetSandbox() {
+  if (sandbox.controller) sandbox.controller.abort();
+  sandbox.messages = [];
+  sandbox.tokensIn = 0;
+  sandbox.tokensOut = 0;
+  sandbox.requests = 0;
+  sandbox.busy = false;
+  sandbox.locked = false;
+  sandbox.controller = null;
+  renderChat();
+  renderUsage();
+}
+
+function renderSandboxControls() {
+  const mine = myParticipant();
+  const done = sandbox.locked || !!(mine && mine.submitted);
+  const connected = !!providerOfModel(mine && mine.tool);
+
+  $('promptInput').disabled = done || !connected;
+  $('sendPrompt').disabled = done || sandbox.busy || !connected;
+  $('sendPrompt').textContent = sandbox.busy ? 'Working' : 'Send';
+
+  const note = $('sandboxNote');
+  if (done) note.textContent = 'Locked. Nothing more goes out.';
+  else if (!connected) {
+    note.innerHTML =
+      'No key connected for <strong>' +
+      esc((mine && mine.tool) || 'your model') +
+      '</strong>. Paste HTML into the editor instead, or <button type="button" class="link-btn" ' +
+      'data-open-keys>connect a key</button>.';
+    const link = note.querySelector('[data-open-keys]');
+    if (link) link.onclick = () => openPage('keys');
+  } else note.textContent = 'Your key, your call. Prompts go straight to the provider.';
+}
+
+/* --------------------------------------------------------------- BYOK -- *
+ * Bring your own key. A key is used for exactly one thing: asking its provider
+ * which models the holder can actually use, so the picker offers real options
+ * instead of a hardcoded list that goes stale.
+ *
+ * Where keys go: localStorage, and from there straight to the provider that
+ * issued them. They are never sent to the vibewars server, never written to the
+ * database, and never leave the browser to any other host. That is deliberate -
+ * anyone can host this, and players should not have to trust the host with a
+ * credential. Submissions run in sandboxed iframes with an opaque origin, so a
+ * rival's code cannot read them either.
+ *
+ * Each entry declares how to ask its provider for a model list. Adding a
+ * provider is one object. */
+
+const PROVIDERS = {
+  openai: {
+    label: 'ChatGPT / OpenAI',
+    hint: 'Starts with sk-. platform.openai.com → API keys',
+    url: 'https://api.openai.com/v1/models',
+    headers: (key) => ({ Authorization: `Bearer ${key}` }),
+    parse: (json) => (json.data || []).map((m) => ({ id: m.id, label: m.id })),
+    keep: (m) => /^(gpt|o\d|chatgpt)/i.test(m.id),
+  },
+  anthropic: {
+    label: 'Claude / Anthropic',
+    hint: 'Starts with sk-ant-. console.anthropic.com → API keys',
+    url: 'https://api.anthropic.com/v1/models',
+    headers: (key) => ({
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+      // Anthropic requires this to be explicit about a browser-side call.
+      'anthropic-dangerous-direct-browser-access': 'true',
+    }),
+    parse: (json) => (json.data || []).map((m) => ({ id: m.id, label: m.display_name || m.id })),
+    keep: () => true,
+  },
+  google: {
+    label: 'Gemini / Google',
+    hint: 'aistudio.google.com → Get API key',
+    url: (key) => `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`,
+    headers: () => ({}),
+    parse: (json) =>
+      (json.models || []).map((m) => ({
+        id: String(m.name || '').replace('models/', ''),
+        label: m.displayName || String(m.name || '').replace('models/', ''),
+      })),
+    keep: (m) => /gemini/i.test(m.id),
+  },
+  xai: {
+    label: 'Grok / xAI',
+    hint: 'console.x.ai → API keys',
+    url: 'https://api.x.ai/v1/models',
+    headers: (key) => ({ Authorization: `Bearer ${key}` }),
+    parse: (json) => (json.data || []).map((m) => ({ id: m.id, label: m.id })),
+    keep: () => true,
+  },
+};
+
+const KEYS_STORE = 'vibewars_keys';   // { provider: key } - never leaves the browser
+const MODELS_STORE = 'vibewars_models'; // { provider: [model, ...] } - safe to keep
+
+function readStore(name) {
+  try {
+    return JSON.parse(localStorage.getItem(name) || '{}') || {};
+  } catch (e) {
+    return {};
+  }
+}
+function writeStore(name, value) {
+  try {
+    localStorage.setItem(name, JSON.stringify(value));
+  } catch (e) {
+    /* private browsing: keys simply do not persist */
+  }
+}
+
+const storedKeys = () => readStore(KEYS_STORE);
+function verifiedModels() {
+  const raw = readStore(MODELS_STORE);
+  const out = {};
+  for (const [provider, list] of Object.entries(raw)) {
+    out[provider] = (list || []).map((m) => (typeof m === 'string' ? { id: m, label: m } : m));
+  }
+  return out;
+}
+
+/** Ask a provider which models this key can reach. Returns models or throws. */
+async function fetchModels(providerId, key) {
+  const p = PROVIDERS[providerId];
+  const url = typeof p.url === 'function' ? p.url(key) : p.url;
+  let res;
+  try {
+    res = await fetch(url, { headers: p.headers(key) });
+  } catch (e) {
+    // Almost always the browser refusing the cross-origin call.
+    throw new Error(
+      'Could not reach the provider from the browser. This is usually a CORS ' +
+        'restriction rather than a bad key.'
+    );
+  }
+  // Google and xAI answer a bad key with 400 rather than 401, so treat the whole
+  // client-error range as a rejection instead of leaking a bare status code.
+  if ([400, 401, 403].includes(res.status)) throw new Error('That key was rejected.');
+  if (!res.ok) throw new Error(`Provider returned ${res.status}.`);
+  const json = await res.json();
+  const models = p.parse(json)
+    .filter((m) => m && m.id && p.keep(m))
+    .sort((a, b) => a.label.localeCompare(b.label));
+  if (!models.length) throw new Error('The key worked but returned no usable models.');
+  return models;
+}
+
+async function addKey(providerId, key) {
+  const models = await fetchModels(providerId, key.trim());
+  writeStore(KEYS_STORE, { ...storedKeys(), [providerId]: key.trim() });
+  writeStore(MODELS_STORE, { ...verifiedModels(), [providerId]: models });
+  return models;
+}
+
+function removeKey(providerId) {
+  const keys = storedKeys();
+  const models = verifiedModels();
+  delete keys[providerId];
+  delete models[providerId];
+  writeStore(KEYS_STORE, keys);
+  writeStore(MODELS_STORE, models);
+}
+
+/** True once at least one key has been verified. */
+const hasVerifiedKeys = () => Object.keys(verifiedModels()).length > 0;
+
+/** Which providers a model name belongs to, for the verified badge. */
+function providerOfModel(label) {
+  for (const [provider, list] of Object.entries(verifiedModels())) {
+    if (list.some((m) => m.label === label)) return provider;
+  }
+  return null;
+}
+
+/** The id a provider's API expects, for a label shown in the picker. */
+function modelIdFor(label) {
+  for (const list of Object.values(verifiedModels())) {
+    const hit = list.find((m) => m.label === label);
+    if (hit) return hit.id;
+  }
+  return null;
+}
+
+/* Fallback catalogue, used for providers with no key attached. Edit freely -
+   these are declared, not verified, and are only labels on a tile. */
 const TOOL_GROUPS = [
   {
     name: 'ChatGPT / OpenAI',
@@ -377,9 +817,44 @@ const TOOL_GROUPS = [
  * Expandable dropdown: providers collapse/expand to reveal their models, and the
  * chosen label is written into a hidden input so the rest of the app is unchanged.
  */
+/**
+ * Verified providers first (real models, straight from the API), then the
+ * declared fallback for anything without a key attached.
+ */
+function pickerGroups() {
+  const models = verifiedModels();
+  const verified = Object.entries(models).map(([id, list]) => ({
+    name: PROVIDERS[id] ? PROVIDERS[id].label : id,
+    models: list.map((m) => m.label),
+    verified: true,
+  }));
+  const covered = new Set(verified.map((g) => g.name));
+  const declared = TOOL_GROUPS.filter((g) => !covered.has(g.name));
+  return [...verified, ...declared];
+}
+
+/** Which provider's key would unlock this tool label, connected or not.
+ *  Verified picks resolve directly; catalogue picks resolve via their group. */
+function providerForTool(label) {
+  const live = providerOfModel(label);
+  if (live) return live;
+  const group = TOOL_GROUPS.find((g) => g.models.includes(label));
+  if (!group) return null;
+  const hit = Object.entries(PROVIDERS).find(([, p]) => p.label === group.name);
+  return hit ? hit[0] : null;
+}
+
+const pickerMounts = [];
+
+/** Rebuild every picker in place, keeping any selection that is still offered. */
+function rebuildPickers() {
+  pickerMounts.forEach((fn) => fn());
+}
+
 function setupToolPicker(mountId, hiddenInputId) {
   const mount = $(mountId);
   const hidden = $(hiddenInputId);
+  mount.innerHTML = '';
 
   const trigger = document.createElement('button');
   trigger.type = 'button';
@@ -406,7 +881,7 @@ function setupToolPicker(mountId, hiddenInputId) {
     trigger.setAttribute('aria-expanded', 'false');
   }
 
-  for (const group of TOOL_GROUPS) {
+  for (const group of pickerGroups()) {
     const wrap = document.createElement('div');
     wrap.className = 'picker-group';
 
@@ -414,7 +889,10 @@ function setupToolPicker(mountId, hiddenInputId) {
     head.type = 'button';
     head.className = 'picker-group-head';
     head.setAttribute('aria-expanded', 'false');
-    head.innerHTML = `<span>${esc(group.name)}</span><span class="picker-caret">▶</span>`;
+    head.innerHTML =
+      `<span>${esc(group.name)}` +
+      (group.verified ? ' <span class="verified-tick" title="Verified with your key">✓</span>' : '') +
+      `</span><span class="picker-caret">▶</span>`;
 
     const models = document.createElement('div');
     models.className = 'picker-models';
@@ -472,12 +950,32 @@ function setupToolPicker(mountId, hiddenInputId) {
     trigger.setAttribute('aria-expanded', String(open));
   };
 
-  document.addEventListener('click', (e) => {
-    if (!mount.contains(e.target)) closePanel();
-  });
+  // Bound once per mount, not once per rebuild - a key connect rebuilds every
+  // picker, and re-adding this each time would pile up dead listeners.
+  if (!mount.dataset.outsideBound) {
+    mount.dataset.outsideBound = '1';
+    document.addEventListener('click', (e) => {
+      if (!mount.contains(e.target)) {
+        const live = mount.querySelector('.picker-panel');
+        const trig = mount.querySelector('.picker-trigger');
+        if (live) live.hidden = true;
+        if (trig) trig.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
 
   mount.appendChild(trigger);
   mount.appendChild(panel);
+
+  // Keep the current choice if it survives a key change.
+  if (hidden.value) setValue(hidden.value);
+}
+
+// Registering after definition so a rebuild re-runs the whole setup.
+function registerPicker(mountId, hiddenInputId) {
+  const build = () => setupToolPicker(mountId, hiddenInputId);
+  pickerMounts.push(build);
+  build();
 }
 
 let ws = null;
@@ -546,9 +1044,10 @@ function onMessage(msg) {
     document.title = 'vibewars - multiplayer vibe coding battles';
     $('winnerBanner').innerHTML = '';
     showChoice(); // back to the create/join fork, not a half-filled form
-    $('navPhase').textContent = 'Not in a lobby';
-    $('navPhase').className = 'chip chip-ink';
-    $('navWho').textContent = 'Anon';
+    $('navPhase').hidden = true;
+    // Leaving a lobby drops the participant, not the identity - the chip goes
+    // back to your stored nickname, not to a placeholder.
+    $('navWho').textContent = identity.nickname;
     $('leaveBtn').style.display = 'none';
     showError('');
     show('entry');
@@ -559,6 +1058,7 @@ function onMessage(msg) {
     $('codeInput').value = msg.code || '';
     sentDraft = msg.code || '';
     syncHighlight();
+    refreshSandboxPreview();
     return;
   }
   if (msg.type === 'state') {
@@ -595,6 +1095,13 @@ function render() {
   const phaseChanged = lastRenderedPhase !== lobby.phase;
   lastRenderedPhase = lobby.phase;
 
+  // A new build phase means a new battle: clear the conversation and counters
+  // before the phase renders, so it sees an unlocked sandbox.
+  if (phaseChanged && lobby.phase === 'active') {
+    resetSandbox();
+    refreshSandboxPreview();
+  }
+
   if (lobby.phase === 'lobby') {
     show('lobby');
     renderLobby(lobby, participants, isHost);
@@ -628,6 +1135,7 @@ function renderLobby(lobby, participants, isHost) {
         `<li><span class="who">${esc(p.name)}</span>` +
         `<span class="chip chip-muted">${esc(p.tool)}</span>` +
         (p.isBot ? '<span class="chip chip-ink">Fake player</span>' : '') +
+        (p.verified ? '<span class="chip chip-accent">&#10003; Verified</span>' : '') +
         (p.isHost ? '<span class="chip chip-accent">Host</span>' : '') +
         (p.isYou ? '<span class="chip chip-secondary">You</span>' : '') +
         (p.connected ? '' : '<span class="chip chip-quiet">Disconnected</span>') +
@@ -675,7 +1183,9 @@ function renderLobby(lobby, participants, isHost) {
   $('durationOut').textContent = lobby.durationMinutes;
 }
 
-/** Render the rolled brief into one of the coral prompt cards. */
+let lastPromptTask = null;
+
+/** Render the rolled brief into one of the prompt cards. */
 function renderPromptCard(el, lobby) {
   const p = lobby.prompt;
   if (!p) {
@@ -698,6 +1208,14 @@ function renderPromptCard(el, lobby) {
     `<ul class="prompt-constraints">${p.constraints
       .map((c) => `<li>${esc(c)}</li>`)
       .join('')}</ul>`;
+
+  // Announce a reroll, but do not re-animate on every unrelated broadcast.
+  if (p.task !== lastPromptTask) {
+    lastPromptTask = p.task;
+    el.classList.remove('rolled');
+    void el.offsetWidth;
+    el.classList.add('rolled');
+  }
 }
 
 /** Fill the topic/difficulty dropdowns once, then keep them in sync. */
@@ -723,12 +1241,17 @@ function renderNav(lobby, mine) {
   const phase = {
     lobby: 'In the lobby',
     active: 'Battle live',
-    reveal: 'Voting',
+    reveal: 'Judging',
     results: 'Results',
   }[lobby.phase];
+  // "Not in a lobby" tells you nothing you cannot already see, so the chip only
+  // appears once you are actually in one.
+  $('navPhase').hidden = false;
   $('navPhase').textContent = phase;
   $('navPhase').className = 'chip ' + (lobby.phase === 'active' ? 'chip-accent' : 'chip-ink');
-  $('navWho').textContent = mine ? `${mine.name} - ${mine.tool}` : 'Anon';
+  // Just the name: the tool is already on your roster row and tile, and the
+  // pair together was wide enough to wrap the navbar onto two lines.
+  $('navWho').textContent = mine ? mine.name : identity.nickname;
   $('leaveBtn').style.display = mine ? 'inline-flex' : 'none';
 }
 
@@ -750,8 +1273,10 @@ function renderActive(lobby, mine, isHost) {
     )
     .join('');
   $('submitNote').textContent = locked
-    ? 'Locked. Waiting for the others.'
-    : 'Submitting banks your remaining time (tiebreaker)';
+    ? 'Locked in. Now watch the clock run down on everyone else.'
+    : 'Submit early and bank the leftover time - it breaks ties.';
+  if (locked) lockSandbox();
+  renderSandboxControls();
   startCountdown(lobby);
 }
 
@@ -766,11 +1291,18 @@ function startCountdown(lobby) {
     $('countdown').classList.toggle('urgent', left > 0 && left <= 10000);
     // Put the clock in the tab title so it is readable from another tab.
     document.title = `${mm}:${ss} - vibewars`;
+    // The server auto-submits the last draft it received, so stop waiting on
+    // the 400ms debounce once the buzzer is close: a final edit must not be
+    // lost to a timer that never got to fire. flushDraft no-ops when nothing
+    // changed, so running it every tick here is free.
+    if (left <= 3000) flushDraft();
     if (left <= 0) {
       clearInterval(countdownTimer);
-      // Server lock is authoritative; block the UI immediately regardless.
+      // Server lock is authoritative; block the UI immediately regardless, and
+      // cut off any request still in flight so nothing lands after the buzzer.
       $('codeInput').readOnly = true;
       $('submitBtn').disabled = true;
+      lockSandbox();
     }
   };
   tick();
@@ -885,12 +1417,19 @@ function buildGrid(container, participants, lobby, withVoting) {
       `<span class="tile-tool">${esc(p.tool)}</span>` +
       (p.isYou ? '<span class="chip chip-secondary">You</span>' : '') +
       (p.isBot ? '<span class="chip chip-muted">Fake</span>' : '') +
+      (p.verified ? '<span class="chip chip-accent" title="Model confirmed against their own API key">&#10003; Verified</span>' : '') +
       (p.dnf ? '<span class="chip chip-accent">DNF</span>' : '') +
       (p.autoSubmitted ? '<span class="chip chip-muted">Buzzer</span>' : '');
     tile.appendChild(head);
 
     const frame = document.createElement('iframe');
-    frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals allow-popups');
+    // No allow-same-origin: submissions get an opaque origin and cannot touch
+    // this page, its localStorage or anyone's API keys. No allow-modals either
+    // - a single alert() in a loop would otherwise freeze every voter's tab at
+    // exactly the moment they are judging. No allow-popups: nothing being
+    // judged has any reason to open a window.
+    frame.setAttribute('sandbox', 'allow-scripts allow-forms');
+    frame.setAttribute('referrerpolicy', 'no-referrer');
     frame.srcdoc = p.code || '<!-- empty submission -->';
     tile.appendChild(frame);
 
@@ -899,7 +1438,7 @@ function buildGrid(container, participants, lobby, withVoting) {
     } else if (withVoting) {
       const note = document.createElement('div');
       note.className = 'tile-foot muted';
-      note.textContent = 'Your own submission. No self-voting.';
+      note.textContent = 'Your own work. No marking your own homework.';
       tile.appendChild(note);
     }
 
@@ -1033,17 +1572,347 @@ function esc(s) {
 
 // ----------------------------------------------------------------- wiring ---
 
+/* ---------------------------------------------------------- identity -- *
+ * Anonymous and passwordless, the same shape uiwars uses: a random id and a
+ * generated nickname kept in localStorage. No accounts, no email, nothing to
+ * recover. localStorage rather than sessionStorage so you keep the same name
+ * across tabs and visits; a lobby seat is still per-tab. */
+
+const ADJECTIVES = [
+  'PIXEL', 'VECTOR', 'ROGUE', 'SOLAR', 'HYPER', 'NEON', 'OMEGA', 'TURBO',
+  'GHOST', 'CYBER', 'ATOMIC', 'RAPID', 'ULTRA', 'VOID', 'QUANTUM', 'CHROME',
+  'FERAL', 'LUCID', 'NOCTURNE', 'PRISM',
+];
+const NOUNS = [
+  'SHARK', 'WIZARD', 'TITAN', 'STORM', 'FORGE', 'BLADE', 'WOLF', 'FALCON',
+  'VIPER', 'COMET', 'RACER', 'HUNTER', 'RAVEN', 'ECHO', 'ORACLE', 'NOMAD',
+  'CIPHER', 'DRIFTER', 'MONOLITH', 'PHANTOM',
+];
+
+function generateNickname() {
+  const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+  return `${adj}_${noun}${Math.floor(Math.random() * 99) + 1}`;
+}
+
+const IDENTITY_KEY = 'vibewars_identity';
+let identity = null;
+
+function loadIdentity() {
+  try {
+    const raw = localStorage.getItem(IDENTITY_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.playerId && parsed.nickname) return parsed;
+    }
+  } catch (e) {
+    /* corrupt or unavailable storage: fall through and mint a new one */
+  }
+  return null;
+}
+
+function saveIdentity(next) {
+  identity = next;
+  try {
+    localStorage.setItem(IDENTITY_KEY, JSON.stringify(next));
+  } catch (e) {
+    /* private browsing: the identity just lasts for this page */
+  }
+  renderIdentity();
+}
+
+function ensureIdentity() {
+  identity = loadIdentity() || {
+    playerId:
+      (crypto.randomUUID && crypto.randomUUID()) ||
+      String(Date.now()) + Math.random().toString(36).slice(2),
+    nickname: generateNickname(),
+  };
+  saveIdentity(identity);
+}
+
+function setNickname(name) {
+  const clean = String(name || '').trim().slice(0, 20);
+  if (!clean) return false;
+  saveIdentity({ ...identity, nickname: clean });
+  return true;
+}
+
+function renderIdentity() {
+  if (!identity) return;
+  const nameEl = $('identityName');
+  if (nameEl) nameEl.textContent = identity.nickname;
+  // Keep the name the wizard will submit in step with the stored one.
+  for (const id of ['createName', 'joinName']) {
+    const input = $(id);
+    if (input && document.activeElement !== input) input.value = identity.nickname;
+  }
+  if (!state) $('navWho').textContent = identity.nickname;
+}
+
 /* ---------------------------------------------------------- info pages -- *
  * Rules, scoring and about live in a sheet rather than separate routes, so
  * reading them never disturbs a battle in progress. The hash keeps them
  * linkable, which matters once this is public. */
 
+/* ------------------------------------------------------- how to play -- *
+ * A walkthrough rather than a wall of text: one idea per screen, Next and Back,
+ * and a dot row you can jump around with. Offered once on a first visit. */
+
+const GUIDE_SEEN = 'vibewars_guide_seen';
+
+const GUIDE_STEPS = [
+  {
+    title: 'One brief, dealt to everyone',
+    body:
+      'A lobby holds four to six players. Inside it you play battles - one round each. Nobody ' +
+      'writes the brief: the host picks a topic and a difficulty and the server deals a context, a ' +
+      'task, a vibe and some deliberately annoying constraints.',
+    art: `<rect x="14" y="18" width="92" height="64" rx="8" class="g-surface"/>
+          <rect x="26" y="32" width="46" height="7" rx="3.5" class="g-accent"/>
+          <rect x="26" y="46" width="68" height="6" rx="3" class="g-line"/>
+          <rect x="26" y="58" width="54" height="6" rx="3" class="g-line"/>
+          <circle cx="96" cy="26" r="4" class="g-accent"/>`,
+  },
+  {
+    title: 'Declare what you are building with',
+    body:
+      'Pick the model or tool you will actually use. The next step offers to take a key for it: ' +
+      'connect one and vibewars asks that provider what you can reach, so your pick is verified ' +
+      'rather than just claimed, and you can prompt it from inside the game. Skipping is fine - ' +
+      'you just paste your HTML in by hand instead.',
+    art: `<rect x="14" y="26" width="92" height="20" rx="10" class="g-surface"/>
+          <rect x="14" y="54" width="92" height="20" rx="10" class="g-surface"/>
+          <circle cx="28" cy="36" r="5" class="g-accent"/>
+          <circle cx="28" cy="64" r="5" class="g-line"/>
+          <path d="M84 32l5 5 9-10" class="g-stroke"/>`,
+  },
+  {
+    title: 'Build against the clock',
+    body:
+      'Prompt your model right there in the sandbox. It already has the brief, so ask for what ' +
+      'you want and watch it render live - or paste your own HTML into the editor. One file, no ' +
+      'frameworks, no build step. Submitting early banks the time you had left, which settles ties.',
+    art: `<rect x="14" y="18" width="92" height="64" rx="8" class="g-surface"/>
+          <rect x="24" y="30" width="30" height="6" rx="3" class="g-accent"/>
+          <rect x="24" y="42" width="58" height="5" rx="2.5" class="g-line"/>
+          <rect x="24" y="52" width="44" height="5" rx="2.5" class="g-line"/>
+          <rect x="24" y="62" width="62" height="5" rx="2.5" class="g-line"/>`,
+  },
+  {
+    title: 'The buzzer is merciless',
+    body:
+      'At zero everything locks. Whatever is in your editor is submitted for you, so half-finished ' +
+      'still counts - it just banks no time. An empty editor is a DNF, and a DNF still gets voted on.',
+    art: `<circle cx="60" cy="50" r="30" class="g-ring"/>
+          <path d="M60 50V30" class="g-stroke"/>
+          <path d="M60 50l14 10" class="g-accent-stroke"/>
+          <circle cx="60" cy="50" r="3.5" class="g-accent"/>`,
+  },
+  {
+    title: 'Everything is revealed',
+    body:
+      'Every submission renders live in its own sandbox, one contestant at a time, labelled with ' +
+      'who wrote it and what they used. Step through with Back and Next - the same way you are ' +
+      'moving through this guide.',
+    art: `<rect x="10" y="24" width="58" height="52" rx="7" class="g-surface"/>
+          <rect x="74" y="34" width="36" height="32" rx="6" class="g-line-fill"/>
+          <rect x="20" y="36" width="30" height="6" rx="3" class="g-accent"/>
+          <rect x="20" y="48" width="38" height="5" rx="2.5" class="g-line"/>
+          <rect x="20" y="58" width="24" height="5" rx="2.5" class="g-line"/>`,
+  },
+  {
+    title: 'Score everyone but yourself',
+    body:
+      'Four criteria, five stars each: Requirements Met, Functionality, Aesthetic and Approach. ' +
+      'Each is averaged across your voters and the four averages are added, so 20.00 is perfect. ' +
+      'One ballot per person, no changes after.',
+    art: `<path d="M32 40l4 8 9 1-6.5 6 1.5 9-8-4.5-8 4.5 1.5-9-6.5-6 9-1z" class="g-accent"/>
+          <path d="M64 40l4 8 9 1-6.5 6 1.5 9-8-4.5-8 4.5 1.5-9-6.5-6 9-1z" class="g-accent"/>
+          <path d="M96 40l4 8 9 1-6.5 6 1.5 9-8-4.5-8 4.5 1.5-9-6.5-6 9-1z" class="g-line"/>`,
+  },
+];
+
+let guideIndex = 0;
+
+function renderGuide() {
+  const host = $('guide');
+  if (!host) return;
+  const step = GUIDE_STEPS[guideIndex];
+  const last = guideIndex === GUIDE_STEPS.length - 1;
+
+  host.innerHTML =
+    '<div class="guide-art"><svg viewBox="0 0 120 100" aria-hidden="true">' + step.art + '</svg></div>' +
+    `<p class="guide-count">Step ${guideIndex + 1} of ${GUIDE_STEPS.length}</p>` +
+    `<h3 class="guide-title">${esc(step.title)}</h3>` +
+    `<p class="guide-body">${esc(step.body)}</p>` +
+    '<div class="guide-dots">' +
+    GUIDE_STEPS.map(
+      (_, i) => `<button class="guide-dot${i === guideIndex ? ' current' : ''}" data-go="${i}"></button>`
+    ).join('') +
+    '</div>' +
+    '<div class="guide-nav">' +
+    `<button class="btn" data-guide="back"${guideIndex === 0 ? ' disabled' : ''}>&#8592; Back</button>` +
+    `<button class="btn btn-primary" data-guide="${last ? 'done' : 'next'}">` +
+    (last ? 'Got it, let me play' : 'Next &#8594;') +
+    '</button></div>';
+
+  host.querySelector('[data-guide="back"]').onclick = () => {
+    if (guideIndex > 0) { guideIndex--; renderGuide(); }
+  };
+  const fwd = host.querySelector('[data-guide="next"], [data-guide="done"]');
+  fwd.onclick = () => {
+    if (last) { markGuideSeen(); closePage(); }
+    else { guideIndex++; renderGuide(); }
+  };
+  host.querySelectorAll('[data-go]').forEach((d) => {
+    d.onclick = () => { guideIndex = Number(d.dataset.go); renderGuide(); };
+  });
+}
+
+function markGuideSeen() {
+  try {
+    localStorage.setItem(GUIDE_SEEN, '1');
+  } catch (e) {
+    /* nothing to remember it with; the guide just offers again */
+  }
+}
+
+/** First-timers get the walkthrough once, without being trapped in it. */
+function maybeOfferGuide() {
+  let seen = null;
+  try {
+    seen = localStorage.getItem(GUIDE_SEEN);
+  } catch (e) {
+    seen = '1'; // no storage: do not nag on every load
+  }
+  if (!seen && !location.hash) {
+    guideIndex = 0;
+    openPage('how');
+  }
+}
+
 const PAGES = {
-  how: { title: 'How it works', template: 'page-how' },
+  how: {
+    title: 'How to play',
+    template: 'page-how',
+    onOpen: () => { renderGuide(); markGuideSeen(); },
+  },
   scoring: { title: 'Scoring', template: 'page-scoring' },
+  leaderboard: { title: 'Leaderboard', template: 'page-leaderboard', onOpen: () => renderGlobalBoard() },
+  keys: { title: 'Your API keys', template: 'page-keys', onOpen: () => renderKeyList() },
   sponsor: { title: 'Sponsor vibewars', template: 'page-sponsor' },
   about: { title: 'About vibewars', template: 'page-about' },
 };
+
+/** All-time standings by declared model, from the battle archive. */
+async function renderGlobalBoard() {
+  const host = $('globalBoard');
+  if (!host) return;
+  host.innerHTML = '<p class="muted">Fetching the standings&#8230;</p>';
+  let data = null;
+  try {
+    const res = await fetch('/api/stats');
+    if (res.ok) data = await res.json();
+  } catch (e) {
+    /* offline or no archive: the empty state below covers it */
+  }
+  if (!data || !data.enabled || !data.tools || !data.tools.length) {
+    host.innerHTML =
+      '<p class="muted">Nothing on the board yet. Win a battle and put your model here.</p>';
+    return;
+  }
+  host.innerHTML =
+    '<div class="table-scroll"><table>' +
+    '<tr><th>#</th><th>Model / tool</th><th>Wins</th><th>Battles</th><th>Avg total</th></tr>' +
+    data.tools
+      .map(
+        (t, i) =>
+          '<tr class="' + (i === 0 ? 'rank-1' : '') + '"><td>' + (i + 1) + '</td>' +
+          // These are COUNT aggregates from a view, but they arrive over HTTP
+          // like anything else, so coerce rather than trust the shape.
+          '<td>' + esc(t.tool) + '</td><td>' + (Number(t.wins) || 0) + '</td>' +
+          '<td>' + (Number(t.battles) || 0) + '</td>' +
+          '<td class="total">' + Number(t.avg_total).toFixed(2) + '</td></tr>'
+      )
+      .join('') +
+    '</table></div>' +
+    '<p class="muted" style="margin-top:14px">Humans only - stand-ins are not counted. ' +
+    'Ranked by wins, then average total.</p>';
+}
+
+/** Render one row per provider: add a key, or show what it unlocked. */
+function renderKeyList() {
+  const list = $('keyList');
+  if (!list) return;
+  const keys = storedKeys();
+  const models = verifiedModels();
+
+  list.innerHTML = Object.entries(PROVIDERS)
+    .map(([id, p]) => {
+      const connected = !!keys[id];
+      const found = models[id] || [];
+      return (
+        `<div class="key-row" data-provider="${id}">` +
+        `<div class="key-row-head"><span class="key-name">${esc(p.label)}</span>` +
+        (connected
+          ? `<span class="chip chip-accent">Connected</span>`
+          : `<span class="chip chip-quiet">Not connected</span>`) +
+        '</div>' +
+        `<p class="key-hint">${esc(p.hint)}</p>` +
+        (connected
+          ? `<div class="key-form"><button class="btn" data-remove="${id}">Remove key</button></div>` +
+            `<p class="key-models">${found.length} model${found.length === 1 ? '' : 's'} available: ` +
+            `${esc(found.slice(0, 6).map((m) => m.label).join(', '))}${found.length > 6 ? ', …' : ''}</p>`
+          : `<div class="key-form">` +
+            `<input type="password" autocomplete="off" spellcheck="false" data-key-input="${id}" placeholder="Paste key" />` +
+            `<button class="btn btn-primary" data-connect="${id}">Connect</button></div>`) +
+        `<p class="key-status" data-status="${id}"></p>` +
+        '</div>'
+      );
+    })
+    .join('');
+
+  list.querySelectorAll('[data-connect]').forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.dataset.connect;
+      const input = list.querySelector(`[data-key-input="${id}"]`);
+      const status = list.querySelector(`[data-status="${id}"]`);
+      const key = input.value.trim();
+      if (!key) {
+        status.className = 'key-status bad';
+        status.textContent = 'Paste a key first.';
+        return;
+      }
+      btn.disabled = true;
+      status.className = 'key-status';
+      status.textContent = 'Checking with the provider…';
+      try {
+        const found = await addKey(id, key);
+        input.value = ''; // do not leave it sitting in the DOM
+        rebuildPickers();
+        renderKeyList();
+        const s2 = list.querySelector(`[data-status="${id}"]`);
+        if (s2) {
+          s2.className = 'key-status ok';
+          s2.textContent = `Connected. ${found.length} models unlocked.`;
+        }
+      } catch (err) {
+        btn.disabled = false;
+        status.className = 'key-status bad';
+        status.textContent = err.message;
+      }
+    };
+  });
+
+  list.querySelectorAll('[data-remove]').forEach((btn) => {
+    btn.onclick = () => {
+      removeKey(btn.dataset.remove);
+      rebuildPickers();
+      renderKeyList();
+    };
+  });
+}
 
 function openPage(key) {
   const page = PAGES[key];
@@ -1051,6 +1920,7 @@ function openPage(key) {
   $('sheetTitle').textContent = page.title;
   $('sheetBody').innerHTML = '';
   $('sheetBody').appendChild($(page.template).content.cloneNode(true));
+  if (page.onOpen) page.onOpen();
   $('sheet').hidden = false;
   $('sheet').querySelector('[data-close-sheet].btn').focus();
   if (location.hash !== '#' + key) history.pushState(null, '', '#' + key);
@@ -1120,25 +1990,33 @@ function animateIn(el, cls = 'anim-in') {
 const FLOWS = {
   create: {
     title: 'Create a lobby',
-    submitLabel: 'Create lobby &#8599;',
-    send: () =>
+    submitLabel: 'Open the lobby &#8599;',
+    send: () => {
+      setNickname($('createName').value);
       sendMsg({
         type: 'create',
         lobbyName: $('createLobbyName').value,
         name: $('createName').value,
         tool: $('createTool').value,
-      }),
+        verified: !!providerOfModel($('createTool').value),
+        playerId: identity.playerId,
+      });
+    },
   },
   join: {
-    title: 'Join a battle',
-    submitLabel: 'Join battle &#8599;',
-    send: () =>
+    title: 'Join a lobby',
+    submitLabel: 'Get me in &#8599;',
+    send: () => {
+      setNickname($('joinName').value);
       sendMsg({
         type: 'join',
         lobbyId: $('joinLobbyId').value,
         name: $('joinName').value,
         tool: $('joinTool').value,
-      }),
+        verified: !!providerOfModel($('joinTool').value),
+        playerId: identity.playerId,
+      });
+    },
   },
 };
 
@@ -1150,14 +2028,25 @@ const wizSteps = () => [...document.querySelectorAll(`.wiz-step[data-flow="${wiz
 function showChoice() {
   wizFlow = null;
   $('entryWizard').hidden = true;
+  $('playScreen').hidden = true;
   $('entryChoice').hidden = false;
   showError('');
+}
+
+function showPlay() {
+  wizFlow = null;
+  $('entryWizard').hidden = true;
+  $('entryChoice').hidden = true;
+  $('playScreen').hidden = false;
+  showError('');
+  loadLobbies();
 }
 
 function startFlow(flow, atIndex = 0) {
   wizFlow = flow;
   wizIndex = atIndex;
   $('entryChoice').hidden = true;
+  $('playScreen').hidden = true;
   $('entryWizard').hidden = false;
   showError('');
   renderWizard();
@@ -1177,13 +2066,126 @@ function renderWizard() {
   const step = steps[wizIndex];
   step.classList.add('active');
 
+  // The key step is built fresh each time: the answer depends on the weapon
+  // picked on the step before, which you can go back and change.
+  const resolved = step.dataset.keystep ? renderKeyStep(step.dataset.keystep) : false;
+
+  // Direct child only, so the picker's own "something else" field is not read.
+  const input = step.querySelector(':scope > input[type="text"]');
+  // An optional step you have not answered says Skip, so it is obvious you can
+  // move on without it. Once answered it reads Continue like any other step.
+  const answered = step.dataset.keystep ? resolved : !!(input && input.value.trim());
   const last = wizIndex === steps.length - 1;
-  $('wizNext').innerHTML = last ? meta.submitLabel : 'Continue &#8594;';
-  $('wizBack').textContent = wizIndex === 0 ? '← Back' : '← Back';
+  $('wizNext').innerHTML = last
+    ? meta.submitLabel
+    : step.dataset.optional === 'true' && !answered
+      ? 'Skip &#8594;'
+      : 'Continue &#8594;';
+  $('wizBack').textContent = '← Back';
 
   // Focus the field so you can just keep typing and hitting enter.
-  const input = step.querySelector('input[type="text"]');
   if (input) setTimeout(() => input.focus(), 0);
+}
+
+/* The key step sits right after the weapon pick, where the reason for it is
+ * obvious. It never blocks: Continue always moves on, because a player without
+ * a key can still paste HTML and compete. Returns true when there is nothing
+ * left to do here, which is what turns "Skip" into "Continue". */
+function renderKeyStep(flow) {
+  const host = $(flow + 'KeyStep');
+  const tool = $(flow + 'Tool').value;
+  const provider = providerForTool(tool);
+
+  // Something with no API behind it - a CLI, an IDE, an agent. Nothing to ask for.
+  if (!provider) {
+    host.innerHTML =
+      '<p class="key-step-none">No key needed for <strong>' + esc(tool || 'that') +
+      '</strong> - it does not run through an API we can call. Build in it however you like, ' +
+      'then paste the HTML into the editor.</p>';
+    return true;
+  }
+
+  const label = PROVIDERS[provider].label;
+  const connected = !!storedKeys()[provider];
+
+  if (connected) {
+    const models = verifiedModels()[provider] || [];
+    const picked = models.some((m) => m.label === tool);
+    host.innerHTML =
+      '<p class="key-step-ok"><span class="key-tick">&#10003;</span> ' + esc(label) +
+      ' is connected. ' + models.length + ' model' + (models.length === 1 ? '' : 's') +
+      ' unlocked.</p>' +
+      (picked
+        ? '<p class="key-step-note">You are set - prompting is live in the sandbox.</p>'
+        : '<p class="key-step-note">Your pick <strong>' + esc(tool) + '</strong> is not one the ' +
+          'provider actually offers, so prompting stays off. Swap to a real one:</p>' +
+          '<div class="key-swap">' +
+          models
+            .slice(0, 8)
+            .map((m) => '<button type="button" class="key-model" data-pick="' + esc(m.label) +
+                        '">' + esc(m.label) + '</button>')
+            .join('') +
+          '</div>');
+
+    host.querySelectorAll('[data-pick]').forEach((btn) => {
+      btn.onclick = () => {
+        setToolValue(flow, btn.dataset.pick);
+        renderWizard(); // repaints this step and the Skip/Continue label
+      };
+    });
+    return true;
+  }
+
+  host.innerHTML =
+    '<p class="key-step-note">Paste a <strong>' + esc(label) + '</strong> key and we will ask ' +
+    'that provider what you can reach. It stays in this browser and goes nowhere else.</p>' +
+    '<p class="key-hint">' + esc(PROVIDERS[provider].hint) + '</p>' +
+    '<div class="key-form">' +
+    '<input type="password" autocomplete="off" spellcheck="false" data-wiz-key placeholder="Paste key" />' +
+    '<button type="button" class="btn btn-primary" data-wiz-connect>Connect</button></div>' +
+    '<p class="key-status" data-wiz-status></p>';
+
+  const input = host.querySelector('[data-wiz-key]');
+  const btn = host.querySelector('[data-wiz-connect]');
+  const status = host.querySelector('[data-wiz-status]');
+
+  const connect = async () => {
+    const key = input.value.trim();
+    if (!key) {
+      status.className = 'key-status bad';
+      status.textContent = 'Paste a key first.';
+      return;
+    }
+    btn.disabled = true;
+    status.className = 'key-status';
+    status.textContent = 'Checking with the provider…';
+    try {
+      await addKey(provider, key);
+      input.value = ''; // do not leave it sitting in the DOM
+      rebuildPickers();
+      renderWizard(); // repaints into the connected state, nav included
+    } catch (err) {
+      btn.disabled = false;
+      status.className = 'key-status bad';
+      status.textContent = err.message;
+    }
+  };
+
+  btn.onclick = connect;
+  // Enter submits, same as every other step in the wizard.
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      connect();
+    }
+  };
+  return false; // still offering to connect
+}
+
+/** Set a flow's tool value and keep its picker trigger in step. */
+function setToolValue(flow, value) {
+  $(flow + 'Tool').value = value;
+  rebuildPickers();
 }
 
 function wizAdvance() {
@@ -1197,8 +2199,8 @@ function wizAdvance() {
   if (input && !optional && !input.value.trim()) {
     showError(
       step.dataset.picker === 'true'
-        ? 'Pick the model or tool you are using.'
-        : 'This one is needed to carry on.'
+        ? 'Pick something to build with.'
+        : "We'll need that one."
     );
     return;
   }
@@ -1212,15 +2214,44 @@ function wizAdvance() {
 }
 
 function wizRetreat() {
-  if (wizIndex === 0) showChoice();
+  if (wizIndex === 0) showPlay();
   else {
     wizIndex--;
     renderWizard();
   }
 }
 
+$('sendPrompt').onclick = sendPrompt;
+// Enter sends, shift+enter makes a new line - the shape people already expect.
+$('promptInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendPrompt();
+  }
+});
+document.querySelectorAll('.tab').forEach((tab) => {
+  tab.onclick = () => {
+    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab));
+    const showPreview = tab.dataset.tab === 'preview';
+    $('tabPreview').hidden = !showPreview;
+    $('tabCode').hidden = showPreview;
+    if (showPreview) refreshSandboxPreview();
+  };
+});
+
+$('menuPlay').onclick = showPlay;
+$('playBack').onclick = showChoice;
 $('chooseCreate').onclick = () => startFlow('create');
 $('chooseJoin').onclick = () => startFlow('join');
+
+document.querySelectorAll('[data-reroll]').forEach((btn) => {
+  btn.onclick = () => {
+    const input = btn.parentElement.querySelector('input[type="text"]');
+    input.value = generateNickname();
+    input.focus();
+  };
+});
+
 $('wizNext').onclick = wizAdvance;
 $('wizBack').onclick = wizRetreat;
 
@@ -1234,8 +2265,8 @@ document.querySelectorAll('.wiz-step input[type="text"]').forEach((input) => {
   });
 });
 
-setupToolPicker('createToolPicker', 'createTool');
-setupToolPicker('joinToolPicker', 'joinTool');
+registerPicker('createToolPicker', 'createTool');
+registerPicker('joinToolPicker', 'joinTool');
 
 $('addBotBtn').onclick = () => sendMsg({ type: 'add_bot' });
 
@@ -1274,7 +2305,7 @@ async function loadLobbies() {
             l.joinable ? '' : ' disabled'
           }>${l.joinable ? 'Join' : l.phase === 'lobby' ? 'Full' : 'In progress'}</button></li>`
       )
-      .join('') || '<li class="slot-empty">No lobbies yet</li>';
+      .join('') || '<li class="slot-empty">No lobbies open. Create one.</li>';
 
   $('lobbyList')
     .querySelectorAll('[data-join-lobby]')
@@ -1298,7 +2329,7 @@ function joinFromList(lobbyId) {
 
 // Keep the open-lobbies list fresh while sitting on the entry screen.
 setInterval(() => {
-  if ($('entry').classList.contains('visible')) loadLobbies();
+  if ($('entry').classList.contains('visible') && !$('playScreen').hidden) loadLobbies();
 }, 3000);
 
 const rollPrompt = () =>
@@ -1341,18 +2372,15 @@ $('nextContestant').onclick = () => {
   }
 };
 
-$('codeInput').addEventListener('input', syncHighlight);
+$('codeInput').addEventListener('input', () => {
+  syncHighlight();
+  if (!$('tabPreview').hidden) refreshSandboxPreview();
+});
 $('codeInput').addEventListener('scroll', () => {
   const layer = document.querySelector('.editor-highlight');
   layer.scrollTop = $('codeInput').scrollTop;
   layer.scrollLeft = $('codeInput').scrollLeft;
 });
-
-$('previewBtn').onclick = () => {
-  const frame = $('selfPreview');
-  frame.style.display = frame.style.display === 'none' ? 'block' : 'none';
-  frame.srcdoc = $('codeInput').value;
-};
 
 // Autosave the draft so the server can lock in work-in-progress at the buzzer.
 // Event-driven rather than purely timed: browsers throttle timers to ~1/min in
@@ -1382,6 +2410,9 @@ document.addEventListener('visibilitychange', flushDraft);
 setInterval(flushDraft, 2000); // slow backstop for anything the events missed
 
 // ------------------------------------------------------------------- boot ---
+
+ensureIdentity();
+maybeOfferGuide();
 
 connect(() => {
   const saved = sessionStorage.getItem('vibewars');

@@ -5,8 +5,10 @@
 
 const path = require('path');
 const http = require('http');
+const crypto = require('crypto');
 const express = require('express');
 const { WebSocketServer } = require('ws');
+const archive = require('./supabase');
 
 const PORT = process.env.PORT || 4300;
 
@@ -15,6 +17,21 @@ const MAX_PARTICIPANTS = 6;
 // How long a disconnected participant keeps their slot, so a page reload resumes
 // instead of dropping them (and freeing their name) mid-lobby.
 const DISCONNECT_GRACE_MS = 20000;
+
+/* Hard caps on anything that arrives over the socket. The browser enforces its
+ * own friendlier limits, but anything can open a WebSocket, so these are the
+ * ones that actually hold. Names and tools are echoed to every player on every
+ * broadcast, so an uncapped one is a bandwidth amplifier as well as a memory
+ * leak. */
+const MAX_NAME = 24;
+const MAX_TOOL = 64;
+const MAX_LOBBY_NAME = 48;
+const MAX_CODE = 128 * 1024; // a self-contained HTML page, generously
+const MAX_LOBBIES = 200; // total live lobbies, server-wide
+// Per-connection message budget. Drafts autosave roughly every 400ms, so a
+// real client sits far under this; a flooder trips it immediately.
+const RATE_WINDOW_MS = 10000;
+const RATE_MAX_MESSAGES = 300;
 
 const CRITERIA = ['requirements', 'functionality', 'aesthetic', 'approach'];
 const CRITERIA_LABELS = {
@@ -148,14 +165,29 @@ function generatePrompt(topic, level) {
 const lobbies = new Map();
 
 function newId(len = 6) {
+  // Unbiased pick from a 32-character alphabet: 32 divides 256, so masking the
+  // low 5 bits of a random byte is uniform with no rejection needed.
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const bytes = crypto.randomBytes(len);
   let out = '';
-  for (let i = 0; i < len; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  for (let i = 0; i < len; i++) out += alphabet[bytes[i] & 31];
   return out;
 }
 
+/* The resume credential. Whoever holds this takes over that seat - their draft,
+ * their submission, their vote - so it must not come from Math.random(), whose
+ * internal state is recoverable from a handful of observed outputs. */
 function newToken() {
-  return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+  return crypto.randomBytes(32).toString('base64url');
+}
+
+/** Length-safe, constant-time token comparison. */
+function tokenMatches(stored, supplied) {
+  if (typeof stored !== 'string' || typeof supplied !== 'string') return false;
+  const a = Buffer.from(stored);
+  const b = Buffer.from(supplied);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
 function createLobby(name) {
@@ -185,10 +217,38 @@ function createLobby(name) {
   return lobby;
 }
 
-function makeParticipant(name, tool, isBot = false) {
+/** Anonymous ids come from the browser, so treat them as untrusted text. */
+function cleanPlayerId(v) {
+  const s = String(v || '').trim();
+  return /^[A-Za-z0-9-]{8,64}$/.test(s) ? s : null;
+}
+
+/** A short display string: no control characters, trimmed, hard length cap.
+ *  Control characters are stripped because these end up in the roster, the
+ *  tiles and the leaderboard, where a stray newline or a bidi override just
+ *  makes a mess of everyone else's screen. */
+function cleanText(v, max) {
+  return String(v == null ? '' : v)
+    .replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '')
+    .trim()
+    .slice(0, max);
+}
+
+/** Submitted markup. Newlines and tabs are content here, so only the size is
+ *  capped - the value is never parsed server-side, only stored and echoed into
+ *  a sandboxed iframe. */
+function cleanCode(v) {
+  return String(v == null ? '' : v).slice(0, MAX_CODE);
+}
+
+function makeParticipant(name, tool, isBot = false, playerId = null, verified = false) {
   return {
     id: newId(8),
     isBot,
+    playerId, // anonymous, client-generated, stable across visits
+    // Whether the declared model was confirmed against the player's own API key.
+    // Self-reported, so it is a claim the client makes, not proof.
+    verified: !!verified,
     token: newToken(),
     name,
     tool,
@@ -286,6 +346,7 @@ function participantPublic(lobby, p, viewerId) {
     name: p.name,
     tool: p.tool,
     isBot: !!p.isBot,
+    verified: !!p.verified,
     connected: p.connected,
     isHost: lobby.hostId === p.id,
     isYou: p.id === viewerId,
@@ -426,6 +487,7 @@ function resetLobby(lobby) {
   lobby.startedAt = null;
   lobby.endsAt = null;
   lobby.votes = new Map();
+  lobby.recorded = false; // the next round is a separate row
   // A new round deserves a new brief.
   lobby.prompt = generatePrompt(lobby.topic, lobby.level);
   lobby.challenge = lobby.prompt.text;
@@ -445,7 +507,22 @@ function resetLobby(lobby) {
 function maybeAdvanceToResults(lobby) {
   if (lobby.phase !== 'reveal') return;
   const { expected, cast } = votingProgress(lobby);
-  if (expected > 0 && cast >= expected) lobby.phase = 'results';
+  if (expected > 0 && cast >= expected) finishBattle(lobby);
+}
+
+/**
+ * Close voting and hand the final standings to the archive. The write is fire
+ * and forget: the leaderboard must never wait on the network, and a database
+ * outage must not spoil the end of a battle.
+ */
+function finishBattle(lobby) {
+  if (lobby.phase === 'results') return;
+  lobby.phase = 'results';
+  if (!lobby.recorded) {
+    lobby.recorded = true;
+    const standings = computeScores(lobby);
+    archive.recordBattle(lobby, standings).catch(() => {});
+  }
 }
 
 // ----------------------------------------------------------- fake players ----
@@ -629,11 +706,13 @@ function handle(ws, msg) {
   switch (msg.type) {
     // -- entry -------------------------------------------------------------
     case 'create': {
-      const name = String(msg.name || '').trim();
-      const tool = String(msg.tool || '').trim();
+      if (ws.lobbyId) return fail(ws, 'Leave your current lobby first.');
+      if (lobbies.size >= MAX_LOBBIES) return fail(ws, 'Too many lobbies open. Try again shortly.');
+      const name = cleanText(msg.name, MAX_NAME);
+      const tool = cleanText(msg.tool, MAX_TOOL);
       if (!name || !tool) return fail(ws, 'Name and LLM/tool are required.');
-      const created = createLobby(String(msg.lobbyName || '').trim());
-      const p = makeParticipant(name, tool);
+      const created = createLobby(cleanText(msg.lobbyName, MAX_LOBBY_NAME));
+      const p = makeParticipant(name, tool, false, cleanPlayerId(msg.playerId), msg.verified === true);
       created.hostId = p.id;
       created.participants.set(p.id, p);
       attach(ws, created, p);
@@ -642,10 +721,11 @@ function handle(ws, msg) {
     }
 
     case 'join': {
-      const target = lobbies.get(String(msg.lobbyId || '').trim().toUpperCase());
+      if (ws.lobbyId) return fail(ws, 'Leave your current lobby first.');
+      const target = lobbies.get(cleanText(msg.lobbyId, 16).toUpperCase());
       if (!target) return fail(ws, 'No lobby with that ID.');
-      const name = String(msg.name || '').trim();
-      const tool = String(msg.tool || '').trim();
+      const name = cleanText(msg.name, MAX_NAME);
+      const tool = cleanText(msg.tool, MAX_TOOL);
       if (!name || !tool) return fail(ws, 'Name and LLM/tool are required.');
       if (target.phase !== 'lobby') return fail(ws, 'That battle has already started.');
       if (target.participants.size >= MAX_PARTICIPANTS) {
@@ -655,7 +735,7 @@ function handle(ws, msg) {
         (p) => p.name.toLowerCase() === name.toLowerCase()
       );
       if (taken) return fail(ws, 'That name is already taken in this lobby.');
-      const p = makeParticipant(name, tool);
+      const p = makeParticipant(name, tool, false, cleanPlayerId(msg.playerId), msg.verified === true);
       target.participants.set(p.id, p);
       attach(ws, target, p);
       broadcast(target);
@@ -663,9 +743,11 @@ function handle(ws, msg) {
     }
 
     case 'resume': {
-      const target = lobbies.get(String(msg.lobbyId || '').trim().toUpperCase());
+      if (ws.lobbyId) return fail(ws, 'Already in a lobby.');
+      const target = lobbies.get(cleanText(msg.lobbyId, 16).toUpperCase());
       if (!target) return fail(ws, 'That lobby no longer exists.');
-      const p = [...target.participants.values()].find((x) => x.token === msg.token);
+      const token = cleanText(msg.token, 128);
+      const p = [...target.participants.values()].find((x) => tokenMatches(x.token, token));
       if (!p) return fail(ws, 'Session not found in that lobby.');
       attach(ws, target, p);
       send(ws, { type: 'draft', code: p.code !== null ? p.code : p.draft });
@@ -769,14 +851,14 @@ function handle(ws, msg) {
     // -- submission --------------------------------------------------------
     case 'draft': {
       if (lobby.phase !== 'active' || me.submitted) return; // silently ignore late keystrokes
-      me.draft = String(msg.code || '');
+      me.draft = cleanCode(msg.code);
       return;
     }
 
     case 'submit': {
       if (lobby.phase !== 'active') return fail(ws, 'Submissions are closed.');
       if (me.submitted) return fail(ws, 'You already submitted.');
-      me.draft = String(msg.code || '');
+      me.draft = cleanCode(msg.code);
       me.code = me.draft;
       me.submitted = true;
       me.dnf = me.code.trim().length === 0;
@@ -798,7 +880,7 @@ function handle(ws, msg) {
     case 'vote': {
       if (lobby.phase !== 'reveal') return fail(ws, 'Voting is not open.');
       const targetId = String(msg.targetId || '');
-      if (targetId === me.id) return fail(ws, 'You cannot vote on your own submission.');
+      if (targetId === me.id) return fail(ws, 'Voting for yourself would be tacky.');
       if (!lobby.participants.has(targetId)) return fail(ws, 'Unknown submission.');
       if (!lobby.votes.has(me.id)) lobby.votes.set(me.id, new Map());
       const byTarget = lobby.votes.get(me.id);
@@ -821,7 +903,7 @@ function handle(ws, msg) {
     case 'force_results': {
       if (!isHost) return fail(ws, 'Only the host can close voting.');
       if (lobby.phase !== 'reveal') return;
-      lobby.phase = 'results';
+      finishBattle(lobby);
       broadcast(lobby);
       return;
     }
@@ -841,6 +923,23 @@ function handle(ws, msg) {
 // ---------------------------------------------------------------- server ----
 
 const app = express();
+
+/* Baseline response headers. Deliberately not a full CSP: submissions render in
+ * sandboxed iframes with an opaque origin, and a page-level script-src would
+ * have to allow 'unsafe-inline' anyway for srcdoc to work, so it would be
+ * decoration rather than a control. These four are the ones that actually pay
+ * for themselves here. */
+app.use((_req, res, next) => {
+  // The game is never meant to be embedded; framing it is only useful for
+  // clickjacking a host's Start or a voter's stars.
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  // No camera, mic or location is ever used, so refuse them outright.
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), interest-cohort=()');
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/api/lobbies', (_req, res) => {
   res.json(
@@ -855,22 +954,73 @@ app.get('/api/lobbies', (_req, res) => {
   );
 });
 
+// Battle history, when a database is attached. Returns 503 rather than
+// pretending, so the client can just hide the section.
+app.get('/api/stats', async (_req, res) => {
+  if (!archive.isEnabled()) return res.status(503).json({ enabled: false });
+  try {
+    const [tools, battles] = await Promise.all([archive.toolStandings(), archive.recentBattles()]);
+    if (!tools) return res.status(503).json({ enabled: false });
+    res.json({ enabled: true, tools, battles });
+  } catch (err) {
+    // Express 4 does not catch rejections from async handlers, so an upstream
+    // network blip would otherwise hang the request and warn on the process.
+    console.error('stats query failed', err);
+    res.status(503).json({ enabled: false });
+  }
+});
+
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+// Without maxPayload the ws default is 100MB per frame, which one client can
+// send on repeat. The largest legitimate message is a submission, so cap a
+// little above MAX_CODE to leave room for JSON escaping and the envelope.
+const wss = new WebSocketServer({ server, maxPayload: 512 * 1024 });
+wss.on('error', (err) => console.error('ws server error', err.message));
 
 wss.on('connection', (ws) => {
+  ws.msgCount = 0;
+  ws.windowStart = Date.now();
+
+  // A socket error is an EventEmitter 'error', which Node rethrows as an
+  // uncaught exception when nothing is listening - so a single oversized frame
+  // or a yanked network cable would take the whole server down with it, every
+  // other battle included. Swallow it and let the 'close' handler tidy up.
+  ws.on('error', (err) => {
+    console.error('socket error', err.message);
+    try { ws.close(); } catch (_) {}
+  });
+
   ws.on('message', (raw) => {
+    // Fixed-window throttle. A real client sends a couple of messages a second
+    // at most; anything past the budget is a flood, so drop the connection
+    // rather than keep servicing it.
+    const now = Date.now();
+    if (now - ws.windowStart > RATE_WINDOW_MS) {
+      ws.windowStart = now;
+      ws.msgCount = 0;
+    }
+    if (++ws.msgCount > RATE_MAX_MESSAGES) {
+      fail(ws, 'Too many messages. Slow down.');
+      return ws.close(1008, 'rate limit');
+    }
+
     let msg;
     try {
       msg = JSON.parse(raw.toString());
     } catch (_) {
       return fail(ws, 'Malformed message.');
     }
+    // A non-object payload would make every msg.field read throw below.
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+      return fail(ws, 'Malformed message.');
+    }
     try {
       handle(ws, msg);
     } catch (err) {
+      // Log the detail, tell the client nothing: internal messages can carry
+      // stack and path information that is none of a player's business.
       console.error('handler error', err);
-      fail(ws, 'Server error: ' + err.message);
+      fail(ws, 'Something went wrong handling that.');
     }
   });
 

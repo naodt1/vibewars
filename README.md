@@ -1,8 +1,8 @@
 # vibewars
 
-**Same brief. Same clock. Different models.**
+**Vibe coding game.** Four to six people, one brief nobody wrote, one clock.
 
-MIT licensed &middot; no accounts &middot; no database &middot; no build step
+MIT licensed &middot; no accounts &middot; no build step
 
 [github.com/naodt1/vibewars](https://github.com/naodt1/vibewars)
 
@@ -12,8 +12,8 @@ Multiplayer "vibe coding battle": 4-6 people get the same prompt and a timer, ea
 HTML as their solution, everything is revealed side-by-side in isolated iframes, and everyone
 rates everyone else.
 
-No build step, no database. One Node process holds all state in memory; restarting the server
-wipes everything.
+No build step. One Node process holds all live state in memory; restarting the server wipes
+every lobby. A database is optional and only used to archive finished battles.
 
 Dark-native and deliberately quiet: charcoal surfaces that separate by tone rather than by
 outline (`#141414` page, `#1C1C1C` cards), one warm accent (`#FF7A2F`), no hard offset shadows,
@@ -63,6 +63,94 @@ topic and difficulty, so a group can play several rounds without repeating.
 
 Everything lives in `TOPICS` and `CONSTRAINTS` at the top of `server.js` - six topics of five
 scenarios each. Add to those arrays to extend the pool; no other code needs to change.
+
+## The menu
+
+The front page is a game menu, not a landing page: the wordmark, the tagline, and three items -
+**Play**, **Leaderboard**, **How to play**. Play opens a second screen with create/join and the
+open lobbies list, so the menu itself stays uncluttered. Leaderboard is the all-time board by
+declared model, read from the battle archive; with no database attached it says so rather than
+showing an empty table.
+
+## How to play (in the app)
+
+The **How to play** page is a walkthrough, not a wall of text: six steps, one idea each, with
+Back and Next and a dot row you can jump around with. It opens itself once on a first visit
+(remembered in `localStorage` as `vibewars_guide_seen`) and is always reachable from the nav.
+Steps live in `GUIDE_STEPS` in `public/app.js` - a title, a body and a small inline SVG each.
+
+## Identity
+
+Anonymous and passwordless, the same shape uiwars uses. On first visit the browser mints a
+`crypto.randomUUID()` and a generated nickname (`PIXEL_BLADE52`) and keeps both in
+`localStorage` under `vibewars_identity`. There are no accounts, no email and nothing to
+recover - clearing site data is the whole logout flow.
+
+Your name shows in the navbar, and the wizard pre-fills it with a **Re-roll** beside it, so a
+returning player just presses Enter. The id is stable across tabs and
+visits, so archived battles can be linked back to the same anonymous player; a lobby seat is still
+per-tab, which is what lets you open several tabs to test.
+
+Note this is *not* Supabase anonymous auth - no JWT, no `auth.uid()`. The id is client-generated
+and therefore self-asserted, which is fine for a party game where the leaderboard is social. If
+you ever want identities the database can actually trust, that means real
+`supabase.auth.signInAnonymously()` and RLS keyed on `auth.uid()`.
+
+## Bring your own key
+
+Add a provider key and vibewars asks that provider which models you can actually reach, then
+offers exactly those in the picker - verified groups first, marked with a tick, above the
+declared fallback list. Pick a verified model and your tile and leaderboard row carry a
+**Verified** badge, and the battle archive records `key_verified`.
+
+Supported today: OpenAI, Anthropic, Google and xAI. Adding another is one object in `PROVIDERS`
+at the top of `public/app.js` - a models endpoint, its headers, and how to read the response.
+
+**Where keys go.** Into this browser's `localStorage`, and from there only to the provider that
+issued them. They are never sent to the vibewars server, never written to the database and never
+committed. That is deliberate: anyone can host this, and players should not have to trust the
+host with a credential. All four providers allow the call directly from the browser, so no proxy
+is needed.
+
+Submissions render in sandboxed iframes with an opaque origin, so a rival's code cannot read your
+storage. Even so, use a key with a spend limit - anything in browser storage is readable by
+anything that manages to run on the page.
+
+**What the badge means.** The client checks the key and reports the result, so it records a claim
+rather than proof. A determined player could edit local storage and assert it. That is fine for a
+party game; making it unforgeable would mean moving the check server-side, which would mean
+handing the host your key.
+
+## Battle history (optional)
+
+The game itself needs no database - lobbies, timers and voting all live in memory. Attaching
+Supabase only adds an archive: when a battle reaches its leaderboard, one write records the brief,
+the final standings and every ballot, so you can ask which model actually wins.
+
+```bash
+cp .env.example .env      # fill in SUPABASE_URL and the keys
+```
+
+Then apply the migration in `supabase/migrations/` to your project:
+
+```bash
+supabase link --project-ref <your-ref>
+npm run db
+```
+
+| Variable | What it is |
+| --- | --- |
+| `SUPABASE_URL` | Project URL |
+| `SUPABASE_PUBLISHABLE_KEY` | Safe to expose. Read-only under the RLS policies in the schema. |
+| `SUPABASE_SERVICE_ROLE_KEY` | **Secret.** Bypasses RLS so the server can write. Never ship it to a browser. |
+
+Reads are public so a stats page can use the publishable key; the write tables have no insert
+policy at all, so only the service role can add rows. Without that split, anyone holding the
+public key could stuff the leaderboard.
+
+`GET /api/stats` returns per-model standings and recent battles, or `503 {"enabled": false}` when
+no database is attached. Every write is best-effort and wrapped: if Supabase is down,
+misconfigured or absent, the battle still finishes normally and the failure is only logged.
 
 ## Fake players
 

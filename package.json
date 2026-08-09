@@ -5,17 +5,34 @@
   "main": "server.js",
   "license": "MIT",
   "author": "Naod Tadele",
-  "repository": { "type": "git", "url": "git+https://github.com/naodt1/vibewars.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/naodt1/vibewars.git"
+  },
   "homepage": "https://github.com/naodt1/vibewars#readme",
-  "bugs": { "url": "https://github.com/naodt1/vibewars/issues" },
-  "keywords": ["game", "multiplayer", "websocket", "llm", "vibe-coding", "party-game"],
-  "engines": { "node": ">=18" },
+  "bugs": {
+    "url": "https://github.com/naodt1/vibewars/issues"
+  },
+  "keywords": [
+    "game",
+    "multiplayer",
+    "websocket",
+    "llm",
+    "vibe-coding",
+    "party-game"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js",
-    "test": "node e2e-test.js"
+    "start": "node --env-file-if-exists=.env server.js",
+    "dev": "node --env-file-if-exists=.env server.js",
+    "test": "node e2e-test.js",
+    "db": "supabase db push",
+    "test:security": "node security-test.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.112.1",
     "express": "^4.19.2",
     "ws": "^8.18.0"
   }

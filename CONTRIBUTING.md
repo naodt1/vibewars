@@ -38,6 +38,8 @@ against, and leave room for interpretation. Constraints should be annoying but s
 | File | What it holds |
 | --- | --- |
 | `server.js` | State machine, WebSocket protocol, timers, prompt generator, fake players, scoring |
+| `supabase.js` | Optional battle archive. Best-effort; the game runs fine without it |
+| `supabase/migrations/` | Tables, RLS policies and the `tool_standings` view |
 | `public/index.html` | Markup, the whole stylesheet, info page templates |
 | `public/app.js` | Client rendering, tool picker, syntax highlighter, confetti |
 | `e2e-test.js` | Full lifecycle test |

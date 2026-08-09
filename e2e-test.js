@@ -185,7 +185,7 @@ async function main() {
 
   alice.send({ type: 'vote', targetId: alice.id, scores: s(5, 5, 5, 5) });
   e = await alice.nextError();
-  check('self-vote rejected', /own submission/i.test(e), e);
+  check('self-vote rejected', /yourself/i.test(e), e);
 
   bob.send({ type: 'vote', targetId: idOf('Alice'), scores: { requirements: 5, functionality: 5, aesthetic: 5 } });
   e = await bob.nextError();
