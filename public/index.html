@@ -34,7 +34,7 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23101010'/%3E%3Cpath d='M16 4 Q17.6 14.4 28 16 Q17.6 17.6 16 28 Q14.4 17.6 4 16 Q14.4 14.4 16 4Z' fill='%23FF7A2F'/%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Outfit:wght@400;500;600;700;800&family=Fredoka:wght@500;600;700&display=swap" rel="stylesheet" />
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -68,6 +68,7 @@
   --accent: #FF7A2F;
   --accent-hover: #FF8F4F;
   --accent-soft: rgba(255, 122, 47, 0.14);
+  --accent-deep: #C1590F; /* the base coat under a glossy accent button */
   --on-accent: #17110C;
   --field: #202020;
   --field-locked: #1A1A1A;
@@ -82,6 +83,9 @@
   --radius-sm: 10px;
   --pill: 999px;
   --shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  /* Rounded and friendly, for the few places that should read as "game"
+     rather than "tool": the wordmark, the big title, menu labels. */
+  --font-display: 'Fredoka', 'Outfit', system-ui, sans-serif;
 }
 
 :root[data-theme="light"] {
@@ -97,6 +101,7 @@
   --accent: #F26313;
   --accent-hover: #D9540A;
   --accent-soft: rgba(242, 99, 19, 0.10);
+  --accent-deep: #A8420A;
   --on-accent: #FFFFFF;
   --field: #FFFFFF;
   --field-locked: #F2F2EF;
@@ -116,16 +121,30 @@
    hiding a .chip or .picker-panel needs saying outright. */
 [hidden] { display: none !important; }
 
+/* Most screens here are short - the menu, the play fork, a finished practice
+   run - and without this the footer just stops wherever the content happens
+   to end, stranding it mid-viewport above a large void. A flex column with
+   the content column growing pins it to the bottom on short pages while
+   still letting it flow normally once the content is taller than the
+   viewport. Only the nav, .wrap and the footer are in flow; the rails,
+   confetti and templates are fixed or display:none, so none of them become
+   stray flex items. */
 body {
   margin: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
   background: var(--bg);
   color: var(--fg);
-  font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+  font-family: 'Outfit', system-ui, -apple-system, sans-serif;
   font-size: 15px;
   font-weight: 400;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
 }
+/* Grow to fill, never shrink below its content. */
+.wrap { flex: 1 0 auto; }
+.site-footer { flex: none; }
 
 h1, h2, h3, h4 { font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; margin: 0; }
 a { color: inherit; }
@@ -139,8 +158,13 @@ a { color: inherit; }
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--line);
 }
+/* On the landing screen the wordmark and the rule are both redundant - the
+   giant title sits right below - so the bar carries only the nav itself.
+   See syncNavChrome() in app.js for when this is applied. */
+.bare-nav .navbar { border-bottom-color: transparent; }
+.bare-nav .navbar .logo { visibility: hidden; }
 /* Same max-width column as .wrap and .footer-inner, so the logo and the
-   identity chip line up with the hero content below rather than the raw
+   theme toggle line up with the hero content below rather than the raw
    viewport edge. */
 .nav-inner {
   max-width: 1120px;
@@ -156,22 +180,28 @@ a { color: inherit; }
 .nav-right { justify-self: end; }
 @media (max-width: 900px) { .nav-inner { grid-template-columns: 1fr auto; } }
 :root[data-theme="light"] .navbar { background: rgba(247, 247, 245, 0.86); }
+/* Two typefaces butted straight together, no gap: the soft rounded "vibe"
+   against the tight geometric "wars" is the whole wordmark. A flex gap here
+   would prise the two halves apart and break the join. */
 .logo {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  font-size: 19px;
-  font-weight: 700;
-  letter-spacing: -0.03em;
+  display: inline-flex;
+  align-items: baseline;
+  font-size: 21px;
+  line-height: 1;
+  white-space: nowrap;
 }
-.logo::before {
-  content: '';
-  width: 15px;
-  height: 15px;
-  border-radius: 4px;
-  background: var(--accent);
+.logo-vibe {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: 0.005em;
+  color: var(--fg);
 }
-.logo span { color: var(--accent); }
+.logo-wars {
+  font-family: 'Outfit', system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  color: var(--accent);
+}
 .nav-right { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; }
 /* The label is short but the column is tight; wrapping it onto two lines made
    the whole navbar taller. */
@@ -253,23 +283,63 @@ a { color: inherit; }
   align-items: center;
   justify-content: center;
   gap: 8px;
+  position: relative;
+  overflow: hidden; /* clips the shine to the pill shape */
   border: 1px solid var(--line-strong);
   border-radius: var(--pill);
-  background: var(--surface-2);
+  /* A soft two-tone split - enough to read as a raised surface without
+     turning every button into a headline. */
+  background: linear-gradient(180deg, var(--surface-3) 0%, var(--surface-2) 100%);
   color: var(--fg);
-  font-family: inherit;
-  font-size: 14px;
-  font-weight: 600;
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 500;
   padding: 11px 20px;
   cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 2px 0 rgba(0, 0, 0, 0.28),
+    0 3px 6px rgba(0, 0, 0, 0.16);
   transition: background .15s ease, border-color .15s ease, opacity .15s ease;
 }
-.btn:hover { background: var(--surface-3); }
+/* The reflection itself: a quiet shine near the top of the pill, not a
+   headline of its own. */
+.btn::before {
+  content: '';
+  position: absolute;
+  top: 10%;
+  left: 8%;
+  right: 8%;
+  height: 32%;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0));
+  pointer-events: none;
+}
+:root[data-theme="light"] .btn::before {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.4), rgba(255, 255, 255, 0));
+}
+.btn:hover { background: linear-gradient(180deg, var(--surface-3) 0%, var(--surface-3) 100%); }
 .btn:disabled { opacity: .38; pointer-events: none; }
-.btn-primary { background: var(--accent); border-color: transparent; color: var(--on-accent); }
-.btn-primary:hover { background: var(--accent-hover); }
-.btn-secondary { background: transparent; }
-.btn-secondary:hover { background: var(--surface-2); }
+.btn-primary {
+  background: linear-gradient(180deg, var(--accent-hover) 0%, var(--accent) 100%);
+  border-color: transparent;
+  color: var(--on-accent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 1px 0 var(--accent-deep),
+    0 3px 8px var(--accent-soft);
+}
+.btn-primary::before { background: linear-gradient(180deg, rgba(255, 255, 255, 0.32), rgba(255, 255, 255, 0)); }
+.btn-primary:hover { background: linear-gradient(180deg, var(--accent-hover) 0%, var(--accent-hover) 60%, var(--accent) 100%); }
+.btn-secondary {
+  background: linear-gradient(180deg, var(--surface-2) 0%, var(--surface) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 1px 0 rgba(0, 0, 0, 0.14),
+    0 2px 5px rgba(0, 0, 0, 0.1);
+}
+.btn-secondary::before { background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0)); }
+.btn-secondary:hover { background: linear-gradient(180deg, var(--surface-3) 0%, var(--surface-2) 100%); }
 .btn-lg { font-size: 15px; padding: 14px 28px; }
 .btn-block { width: 100%; }
 
@@ -326,6 +396,29 @@ textarea[readonly] { background: var(--field-locked); color: var(--muted); }
   font-weight: 500;
 }
 #error:empty { display: none; }
+
+/* -------------------------------------------------------------- back nav -- */
+/* The single place "back" lives: the very top of the content column, always.
+   Never inside the navbar, never a per-page header, never left on one screen
+   and right on the next - the DOM slot itself is the whole point. */
+.page-back { margin: 0 0 22px; }
+.back-fab {
+  padding: 9px 18px 9px 14px;
+  font-size: 13px;
+}
+.back-fab-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  transition: transform .15s cubic-bezier(.2,.9,.3,1);
+}
+.back-fab:hover .back-fab-icon { transform: translateX(-2px); }
 
 /* ------------------------------------------------------------ tool picker -- */
 .picker { position: relative; }
@@ -402,12 +495,33 @@ textarea[readonly] { background: var(--field-locked); color: var(--muted); }
 
 /* ---------------------------------------------------------------- prompt -- */
 .prompt-card {
-  background: var(--surface);
-  border: 1px solid var(--line);
+  position: relative;
+  overflow: hidden; /* clips the glow to the card's rounded corners */
+  background: linear-gradient(155deg, var(--surface-2) 0%, var(--surface) 60%);
+  border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   padding: 32px;
   margin-bottom: 20px;
 }
+/* A quiet accent glow anchored to one corner - enough to make the card feel
+   lit rather than another flat grey box, without tinting the text. */
+.prompt-card::before {
+  content: '';
+  position: absolute;
+  top: -55%;
+  right: -18%;
+  width: 62%;
+  height: 170%;
+  background: radial-gradient(circle, var(--accent) 0%, transparent 68%);
+  opacity: 0.16;
+  pointer-events: none;
+}
+:root[data-theme="light"] .prompt-card::before { opacity: 0.1; }
+.prompt-card > * { position: relative; } /* keeps content above the glow layer */
+/* The card's placement already says "this is the challenge" - the tag was
+   just repeating that and eating a row. Same call already made for the
+   in-round version of this card (.brief-strip). */
+.prompt-card .prompt-tag { display: none; }
 .prompt-tag {
   display: inline-flex;
   align-items: center;
@@ -439,15 +553,16 @@ textarea[readonly] { background: var(--field-locked); color: var(--muted); }
   margin-bottom: 8px;
 }
 .prompt-context {
-  font-size: clamp(26px, 3.4vw, 38px);
+  /* Was clamp(26px, 3.4vw, 38px) - big enough to outweigh the Task below it,
+     when Context is the scene-setter and Task is the actual instruction. */
+  font-size: clamp(20px, 2.6vw, 28px);
   font-weight: 700;
   letter-spacing: -0.03em;
-  line-height: 1.15;
-  margin: 0 0 24px;
+  line-height: 1.2;
+  margin: 0 0 20px;
 }
 .prompt-task {
   background: var(--surface-2);
-  border-left: 3px solid var(--accent);
   border-radius: var(--radius-sm);
   padding: 20px 22px;
   margin-bottom: 22px;
@@ -496,13 +611,15 @@ textarea[readonly] { background: var(--field-locked); color: var(--muted); }
   max-width: 1760px;
   margin-left: calc(50% - min(50vw - 28px, 880px));
 }
-@media (min-width: 1560px) {
-  /* The rails sit a fixed 600px either side of centre, so once they appear the
-     workspace has to live between them. 28px of daylight each side, and the
-     rails stay on top (they are z-index 95) rather than getting covered. */
+@media (min-width: 1600px) {
+  /* Rails occupy 20px..210px at each edge, so the workspace runs between their
+     inner edges: 210 plus a gutter, a side. The gutter is set at 38px rather
+     than the ~28px it looks like, because 100vw counts the scrollbar while the
+     layout does not, and that difference comes straight out of the gap. Caps at
+     1760px, past which a preview is merely wide rather than more useful. */
   .workspace {
-    width: min(1144px, calc(100vw - 56px));
-    margin-left: calc(50% - min(572px, calc(50vw - 28px)));
+    width: min(1760px, calc(100vw - 496px));
+    margin-left: calc(50% - min(880px, calc(50vw - 248px)));
   }
 }
 @media (max-width: 900px) { .workspace { width: 100%; margin-left: 0; } }
@@ -944,26 +1061,73 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
 
 .choice-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 20px; }
 .choice {
+  position: relative;
+  overflow: hidden; /* clips the hover glow to the card's rounded corners */
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 22px;
   text-align: left;
   width: 100%;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 2px solid var(--line-strong);
+  border-radius: 18px;
   padding: 26px;
   font-family: inherit;
   color: var(--fg);
   cursor: pointer;
-  transition: background .15s ease, border-color .15s ease;
+  /* A solid slab sitting on a hard ledge rather than a soft blur - the ledge
+     is what makes it read as a physical game button you can press down. */
+  box-shadow: 0 5px 0 var(--line-strong);
+  transition: background .15s ease, border-color .15s ease, box-shadow .12s ease;
 }
-.choice:hover { background: var(--surface-2); border-color: var(--line-strong); }
-.choice-art { width: 54px; height: 54px; flex: none; }
+/* A quiet accent glow that only shows up on hover/focus - the card stays
+   calm at rest and lights up as an invitation to click, rather than
+   competing with everything else on the entry screen at all times. */
+.choice::before {
+  content: '';
+  position: absolute;
+  top: -60%;
+  right: -20%;
+  width: 65%;
+  height: 190%;
+  background: radial-gradient(circle, var(--accent) 0%, transparent 70%);
+  opacity: 0;
+  transition: opacity .25s ease;
+  pointer-events: none;
+}
+.choice > * { position: relative; }
+.choice:hover, .choice:focus-visible {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  box-shadow: 0 5px 0 var(--accent);
+}
+.choice:hover::before, .choice:focus-visible::before { opacity: 0.14; }
+:root[data-theme="light"] .choice:hover::before, :root[data-theme="light"] .choice:focus-visible::before { opacity: 0.08; }
+.choice-art {
+  width: 60px;
+  height: 60px;
+  flex: none;
+  /* Lifts the icon off the card like a proper app icon instead of sitting
+     flush with the background. */
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.35));
+}
+:root[data-theme="light"] .choice-art { filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.14)); }
 .choice-body { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.choice-title { font-size: 19px; font-weight: 700; letter-spacing: -0.02em; }
+.choice-title { font-family: var(--font-display); font-size: 21px; font-weight: 600; letter-spacing: 0; }
 .choice-sub { font-size: 14px; color: var(--muted); line-height: 1.5; }
-.choice-go { margin-left: auto; font-size: 18px; color: var(--accent); }
+.choice-go {
+  margin-left: auto;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 16px;
+}
 
 .wizard { max-width: 620px; margin: 0 auto 20px; }
 .wiz-progress { display: flex; gap: 6px; margin-bottom: 30px; }
@@ -977,7 +1141,7 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
 .wiz-nav { display: flex; justify-content: space-between; gap: 14px; margin-top: 32px; }
 .wiz-reroll { margin-top: 10px; padding-left: 0; }
 
-/* ------------------------------------------------------- nav / sheet / footer -- */
+/* ------------------------------------------------------------ nav / footer -- */
 .nav-links { display: flex; align-items: center; gap: 2px; }
 @media (max-width: 900px) { .nav-links { display: none; } }
 .nav-link {
@@ -995,46 +1159,14 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
 }
 .nav-link:hover { color: var(--fg); }
 
-#sheet {
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-#sheet[hidden] { display: none; }
-.sheet-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.6); animation: fade-in .2s ease both; }
-.sheet-panel {
-  position: relative;
-  width: min(680px, 100%);
-  max-height: min(82vh, 760px);
-  overflow-y: auto;
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  padding: 28px clamp(22px, 4vw, 44px) 36px;
-  animation: modal-in .22s cubic-bezier(.2, .9, .3, 1) both;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
-}
-.sheet-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  position: sticky;
-  top: -28px;
-  background: var(--surface);
-  padding: 4px 0 18px;
-  margin: -4px 0 12px;
-}
-.sheet-head .card-title { font-size: clamp(24px, 3.4vw, 34px); letter-spacing: -0.03em; }
-.sheet-body { max-width: 680px; font-size: 15px; line-height: 1.7; }
-.sheet-body h3 { font-size: 17px; margin: 32px 0 12px; }
-.sheet-body h3:first-child { margin-top: 4px; }
-.sheet-body p { margin: 0 0 14px; color: var(--muted); }
-.sheet-body code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; background: var(--surface-2); padding: 2px 6px; border-radius: 5px; }
+/* Info pages (how to play, scoring, keys, sponsor, about, leaderboard) render
+   in the normal page flow, same as every other section - this is just the
+   reading-width typography for their content. */
+.info-body { max-width: 680px; font-size: 15px; line-height: 1.7; }
+.info-body h3 { font-size: 17px; margin: 32px 0 12px; }
+.info-body h3:first-child { margin-top: 4px; }
+.info-body p { margin: 0 0 14px; color: var(--muted); }
+.info-body code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; background: var(--surface-2); padding: 2px 6px; border-radius: 5px; }
 .steps, .bullets { margin: 0 0 18px; padding: 0; list-style: none; counter-reset: step; }
 .steps li, .bullets li { position: relative; padding-left: 30px; margin-bottom: 12px; color: var(--muted); }
 .steps li { counter-increment: step; }
@@ -1086,9 +1218,8 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
 .footer-links { display: flex; gap: 2px; flex-wrap: wrap; }
 
 /* --------------------------------------------------------------- sponsors -- */
-/* Fixed to the viewport and given a higher stacking order than the info
-   modal (#sheet, z-index 90) so a sponsor is visible on every screen of the
-   game, including while a nav page is open - never buried behind it. */
+/* Fixed to the viewport with a high stacking order, so a sponsor is visible
+   on every screen of the game and never buried behind anything else. */
 .rail {
   position: fixed;
   top: 84px;
@@ -1096,17 +1227,31 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
   width: 190px;
   display: none;
   flex-direction: column;
+  /* Slots size to their own content and stack from the top. They used to
+     divide the rail's full height between them, which on a tall monitor blew
+     each card up to several hundred pixels with the logo and text marooned in
+     the top corner. If the stack ever outgrows the viewport it scrolls rather
+     than squashing the cards back down. */
+  justify-content: flex-start;
+  overflow-y: auto;
+  scrollbar-width: none;
   gap: 10px;
   z-index: 95;
   pointer-events: none;
 }
+.rail::-webkit-scrollbar { display: none; }
 .rail > * { pointer-events: auto; }
 /* .wrap is a 1120px column, so its edge sits at 50vw - 560px. Offset by the
    190px rail width plus a 40px gutter so a slot never touches the hero
    content next to it. */
-.rail-left { left: max(20px, calc(50vw - 790px)); }
-.rail-right { right: max(20px, calc(50vw - 790px)); }
-@media (min-width: 1560px) { .rail { display: flex; } }
+/* Pinned to the viewport edges rather than tracking the centre. Tracking the
+   centre kept the rails a fixed distance in from the middle, which capped the
+   usable centre column at ~1200px no matter how big the monitor was; hugging
+   the edges means every extra pixel of width goes to the game instead. */
+.rail-right { right: 20px; }
+/* 1600 rather than 1560: below this the rails would close to within 10px of the
+   content column, which reads as a collision even though it technically is not. */
+@media (min-width: 1600px) { .rail { display: flex; } }
 .rail-label { font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); padding-left: 2px; flex: 0 0 auto; }
 .sponsor-slot {
   position: relative;
@@ -1115,8 +1260,7 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
   align-items: flex-start;
   gap: 10px;
   width: 100%;
-  flex: 1 1 0;
-  min-height: 0;
+  flex: 0 0 auto;
   padding: 16px;
   background: var(--surface);
   border: 1px dashed var(--line-strong);
@@ -1125,10 +1269,25 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
   color: var(--faint);
   cursor: pointer;
   text-align: left;
-  overflow: hidden;
-  transition: border-color .15s ease, color .15s ease, background .15s ease;
+  text-decoration: none;
+  transition: border-color .15s ease, color .15s ease, background .15s ease,
+    box-shadow .18s ease;
 }
-.sponsor-slot:hover, .sponsor-slot:focus-visible { border-style: solid; border-color: var(--accent); }
+/* Hover reads on the whole slot at once: the outline goes solid accent with a
+   soft ring around it, and the logo swells. The card's own content stays put
+   the whole time - it used to be covered edge to edge by the CTA panel, which
+   hid the very logo the hover is meant to draw attention to. */
+.sponsor-slot:hover, .sponsor-slot:focus-visible {
+  border-style: solid;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+/* Filled slots (the site's own projects) read as taken, not up for grabs:
+   solid border and full-strength text from the start, no dashed "vacancy"
+   look and no price-pitch CTA on hover. */
+.sponsor-slot-filled { border-style: solid; border-color: var(--line-strong); color: var(--fg); }
+.sponsor-slot-filled:hover, .sponsor-slot-filled:focus-visible { border-color: var(--accent); }
+.sponsor-slot-filled .slot-title { color: var(--fg); }
 .slot-icon {
   display: flex;
   align-items: center;
@@ -1139,38 +1298,49 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
   background: var(--surface-2);
   color: var(--accent);
   font-size: 15px;
+  overflow: hidden;
   flex: 0 0 auto;
+  /* Scaled on the box, not the <img>, so the emoji placeholders in the empty
+     slots grow by the same amount as the real logos. */
+  transition: transform .22s cubic-bezier(.2, 1.1, .5, 1);
 }
+.sponsor-slot:hover .slot-icon, .sponsor-slot:focus-visible .slot-icon { transform: scale(1.16); }
+.slot-icon img { width: 100%; height: 100%; object-fit: cover; }
 .slot-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .slot-title { font-size: 14px; font-weight: 600; color: var(--muted); line-height: 1.25; }
 .slot-desc { font-size: 11.5px; line-height: 1.45; color: var(--faint); }
 /* The CTA stays out of sight until the slot is hovered or focused - no price
    hook here, that lives in the sponsor page once someone has clicked through. */
 .slot-hover {
-  position: absolute;
-  inset: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
-  background: var(--surface);
+  max-height: 0;
   opacity: 0;
-  transform: translateY(4px);
+  overflow: hidden;
   pointer-events: none;
-  transition: opacity .15s ease, transform .15s ease;
+  transition: opacity .18s ease, max-height .22s ease;
 }
-.sponsor-slot:hover .slot-hover, .sponsor-slot:focus-visible .slot-hover { opacity: 1; transform: translateY(0); }
+.sponsor-slot:hover .slot-hover, .sponsor-slot:focus-visible .slot-hover { opacity: 1; max-height: 24px; }
 .slot-cta { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; color: var(--accent); }
 .slot-price-inline { font-weight: 700; color: var(--accent); }
 
 /* ------------------------------------------------------------- main menu -- */
+/* The wordmark writ large - same two-typeface join as .logo, just scaled up. */
 .game-title {
+  font-family: var(--font-display);
   font-size: clamp(64px, 9vw, 128px);
-  font-weight: 700;
-  letter-spacing: -0.05em;
+  font-weight: 500;
+  letter-spacing: -0.01em;
   line-height: 0.95;
   margin: 0 0 34px;
 }
-.game-title em { font-style: normal; color: var(--accent); }
+.game-title em {
+  font-style: normal;
+  font-family: 'Outfit', system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.05em;
+  color: var(--accent);
+}
 .game-menu { display: flex; flex-direction: column; }
 .menu-item {
   display: flex;
@@ -1181,18 +1351,26 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
   border: 0;
   border-top: 1px solid var(--line);
   padding: 18px 6px;
-  font-family: inherit;
+  font-family: var(--font-display);
   font-size: clamp(26px, 3.4vw, 40px);
-  font-weight: 700;
-  letter-spacing: -0.03em;
+  font-weight: 600;
+  letter-spacing: -0.005em;
   color: var(--fg);
   text-align: left;
   cursor: pointer;
-  transition: padding-left .18s cubic-bezier(.2,.9,.3,1), color .15s ease;
+  transition: padding-left .18s cubic-bezier(.2,.9,.3,1), color .15s ease,
+    transform .18s cubic-bezier(.2,.9,.3,1);
 }
 .menu-item:last-child { border-bottom: 1px solid var(--line); }
 .menu-item:hover { padding-left: 24px; color: var(--accent); }
 .menu-num { font-size: 13px; font-weight: 600; letter-spacing: 0.12em; color: var(--faint); }
+.menu-icon {
+  font-size: 22px;
+  line-height: 1;
+  filter: grayscale(1) opacity(0.55);
+  transition: filter .18s ease;
+}
+.menu-item:hover .menu-icon { filter: grayscale(0) opacity(1); }
 .menu-item:hover .menu-num { color: var(--accent); }
 .menu-go {
   margin-left: auto;
@@ -1304,8 +1482,12 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
 .guide-dot.current { background: var(--accent); width: 38px; }
 .guide-nav { display: flex; justify-content: space-between; gap: 14px; }
 
-/* Each step slides in, so pressing Next feels like turning a card. */
-.guide-art, .guide-count, .guide-title, .guide-body { animation: guide-in .28s ease both; }
+/* Each step slides in, so pressing Next feels like turning a card. "backwards"
+   only (not "both"): these have staggered delays below and need the pre-start
+   hold, but keeping the post-animation transform too would leave a non-none
+   transform applied forever, which quietly creates a stacking context and can
+   trap a popover's z-index inside it. */
+.guide-art, .guide-count, .guide-title, .guide-body { animation: guide-in .28s ease backwards; }
 .guide-count { animation-delay: .03s; }
 .guide-title { animation-delay: .05s; }
 .guide-body { animation-delay: .07s; }
@@ -1395,7 +1577,10 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
   padding: 32px;
   margin-bottom: 20px;
   overflow: hidden;
-  animation: winner-pop .45s cubic-bezier(.2, 1.1, .5, 1) both;
+  /* No fill-mode: "both" would hold a non-none transform forever, which
+     quietly creates a stacking context and can trap this element's z-index
+     under a sibling painted later in the DOM. */
+  animation: winner-pop .45s cubic-bezier(.2, 1.1, .5, 1);
 }
 .winner-label {
   display: inline-flex;
@@ -1420,20 +1605,35 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
 /* ------------------------------------------------------ micro interactions -- */
 /* Small, fast, and physical: things you feel more than notice. Everything here
    is disabled under prefers-reduced-motion further down. */
-.btn { transition: background .15s ease, border-color .15s ease, opacity .15s ease, transform .12s ease; }
+.btn {
+  transition: background .15s ease, border-color .15s ease, opacity .15s ease,
+    transform .12s ease, box-shadow .12s ease;
+}
 .btn:hover { transform: translateY(-1px); }
-.btn:active { transform: translateY(1px); transition-duration: .05s; }
+/* The press: the button drops onto its shadow rather than just moving, which
+   is what makes it read as a physical object instead of a flat rectangle. */
+.btn:active {
+  transform: translateY(1px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.14);
+  transition-duration: .05s;
+}
+.btn-primary:active {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 1px 3px var(--accent-soft);
+}
 
-.choice { transition: background .18s ease, border-color .18s ease, transform .18s ease; }
-.choice:hover { transform: translateY(-3px); }
-.choice:active { transform: translateY(-1px); }
+.choice { transition: background .18s ease, border-color .18s ease, transform .12s ease, box-shadow .12s ease; }
+.choice:hover { transform: translateY(-2px); }
+/* Press: the slab travels the full height of its ledge and the ledge
+   collapses under it, so the button physically bottoms out. */
+.choice:active {
+  transform: translateY(5px);
+  box-shadow: 0 0 0 var(--accent);
+  transition-duration: .05s;
+}
 .choice .choice-go { transition: transform .18s ease; }
 .choice:hover .choice-go { transform: translate(3px, -3px); }
 .choice-art { transition: transform .25s cubic-bezier(.2,.9,.3,1); }
 .choice:hover .choice-art { transform: scale(1.06) rotate(-2deg); }
-
-.logo::before { transition: transform .3s cubic-bezier(.2,.9,.3,1), border-radius .3s ease; }
-.logo:hover::before { transform: rotate(45deg); border-radius: 2px; }
 
 /* Nav links get a rule that grows from the centre rather than a colour flip. */
 .nav-link { position: relative; }
@@ -1470,24 +1670,78 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
 .tile { transition: border-color .18s ease; }
 #resultsGrid .tile:hover { border-color: var(--line-strong); }
 
-/* Switching contestant should feel like a change of card, not a jump cut. */
-#grid.stage .tile.active { animation: tile-in .26s cubic-bezier(.2,.9,.3,1) both; }
+/* Switching contestant should feel like a change of card, not a jump cut.
+   No fill-mode, same reason as .winner's animation above. */
+#grid.stage .tile.active { animation: tile-in .26s cubic-bezier(.2,.9,.3,1); }
 @keyframes tile-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
 /* A freshly rolled brief announces itself. */
-.prompt-card.rolled { animation: rolled .32s cubic-bezier(.2,.9,.3,1) both; }
+.prompt-card.rolled { animation: rolled .32s cubic-bezier(.2,.9,.3,1); }
 @keyframes rolled { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
+/* An error is the one thing here that appears without being asked for, so it
+   slides in rather than blinking into place. #error:empty is display:none, so
+   going from empty to filled restarts this on its own; re-setting the text
+   while it is already showing does not, which is what we want for a message
+   that is being refreshed rather than raised. */
+#error:not(:empty) { animation: error-in .28s cubic-bezier(.2,.9,.3,1); }
+@keyframes error-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* The moon/sun leans as you approach it and swings when pressed. */
+#themeToggle { transition: transform .2s cubic-bezier(.2,.9,.3,1); }
+#themeToggle:hover { transform: rotate(-18deg) scale(1.12); }
+#themeToggle:active { transform: rotate(-160deg) scale(.94); transition-duration: .25s; }
+
+/* Focus is a state you should feel arrive, not just notice afterwards: the
+   accent border is already there, this adds the ring that grows with it. */
+input, textarea, select { transition: border-color .15s ease, box-shadow .18s ease; }
+input:focus, textarea:focus, select:focus { box-shadow: 0 0 0 3px var(--accent-soft); }
+.editor { transition: border-color .15s ease, box-shadow .18s ease; }
+.editor:focus-within { box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* Tabs: the inactive one lifts to meet the cursor, the active one settles. */
+.tab { transition: background .15s ease, color .15s ease, transform .15s cubic-bezier(.2,.9,.3,1); }
+.tab:hover:not(.active) { transform: translateY(-1px); }
+.tab.active { animation: tab-pop .22s cubic-bezier(.2, 1.1, .5, 1); }
+@keyframes tab-pop { from { transform: scale(.92); } to { transform: scale(1); } }
+
+/* The menu emoji wakes up with the row rather than just regaining colour. */
+.menu-icon { transition: filter .18s ease, transform .22s cubic-bezier(.2, 1.1, .5, 1); }
+.menu-item:hover .menu-icon { transform: scale(1.18) rotate(-6deg); }
+/* The whole row takes the press, so a menu pick feels like a button. */
+.menu-item:active { transform: translateX(2px) scale(.995); transition-duration: .05s; }
+
+/* The sponsor logo's hover growth lives with the rest of the slot styling,
+   up in the sponsors section - scaling .slot-icon there covers the emoji
+   placeholders too, and scaling the <img> here as well would compound. */
+
+/* Roster rows step aside as you run down the list. */
+.roster li { transition: background .15s ease, padding-left .15s cubic-bezier(.2,.9,.3,1); }
+.roster li:hover { padding-left: 20px; }
+
+/* The wordmark has a little give in it - it is the one piece of pure
+   personality in the chrome. */
+.logo { transition: transform .25s cubic-bezier(.2, 1.1, .5, 1); }
+.navbar .logo:hover { transform: scale(1.04) rotate(-1.5deg); }
+
 /* ----------------------------------------------------------------- motion -- */
-@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
-@keyframes modal-in { from { transform: scale(.97) translateY(8px); opacity: 0; } to { transform: scale(1) translateY(0); opacity: 1; } }
 @keyframes rise-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes step-in { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: translateX(0); } }
 @keyframes winner-pop { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes pulse-urgent { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 
-.anim-in { animation: rise-in .3s ease both; }
-.anim-stagger > * { animation: rise-in .34s ease both; }
+/* "backwards" only, never "both": .anim-stagger's children carry real delays
+   below and need the pre-start hold so they don't flash at full opacity, but
+   holding the post-animation transform too would leave a non-none transform
+   applied forever - which creates a stacking context and can trap a dropdown
+   or modal painted inside one of these elements underneath its own siblings.
+   That exact bug is what overlapped the tool picker with the wizard's Back/
+   Continue buttons. */
+.anim-in { animation: rise-in .3s ease backwards; }
+.anim-stagger > * { animation: rise-in .34s ease backwards; }
 .anim-stagger > *:nth-child(1) { animation-delay: .02s; }
 .anim-stagger > *:nth-child(2) { animation-delay: .05s; }
 .anim-stagger > *:nth-child(3) { animation-delay: .08s; }
@@ -1495,22 +1749,34 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
 .anim-stagger > *:nth-child(5) { animation-delay: .14s; }
 .anim-stagger > *:nth-child(6) { animation-delay: .17s; }
 .anim-stagger > *:nth-child(n+7) { animation-delay: .2s; }
-.wiz-step.active { animation: step-in .26s ease both; }
+/* No fill-mode: "both" was holding transform: translateX(0) on the active
+   step forever after the slide-in finished. A non-none transform value
+   creates a stacking context even at the identity transform, which trapped
+   the model picker's z-index:40 panel inside this step - so the wizard's
+   Back/Continue buttons, sitting outside that trapped context, painted on
+   top of the open dropdown instead of under it. */
+.wiz-step.active { animation: step-in .26s ease; }
 .countdown.urgent { animation: pulse-urgent 1s ease-in-out infinite; }
 
 @media (prefers-reduced-motion: reduce) {
-  .hero-art, .menu-item, .menu-go,
+  .hero-art, .menu-item, .menu-go, .menu-icon,
   .marquee-track, .tagline-dots i, .guide-art, .guide-count, .guide-title,
   .guide-body, .guide-dot,
   .anim-in, .anim-stagger > *, .wiz-step.active, .countdown.urgent,
-  .sheet-panel, .sheet-backdrop, .winner, .choice, .choice-art, .choice-go,
-  .btn, .logo::before, .nav-link::after, .picker-model, .stars label,
+  .winner, .choice, .choice-art, .choice-go,
+  .btn, .nav-link::after, .picker-model, .stars label,
   .vote-dot, .sponsor-slot, .tile, .roster li, .wiz-progress span,
-  #grid.stage .tile.active, .prompt-card.rolled {
+  #grid.stage .tile.active, .prompt-card.rolled,
+  #error:not(:empty), #themeToggle, .tab, .tab.active, .logo,
+  input, textarea, select, .editor, .slot-icon, .slot-icon img, .slot-hover {
     animation: none !important;
     transition: none !important;
     transform: none !important;
   }
+  /* The focus ring is an affordance, not decoration - it stays, it just
+     stops growing into place. */
+  input:focus, textarea:focus, select:focus { box-shadow: 0 0 0 3px var(--accent-soft) !important; }
+  .editor:focus-within { box-shadow: 0 0 0 3px var(--accent-soft) !important; }
 }
 
 /* The inline artwork follows the theme by matching on its own literal fills. */
@@ -1519,6 +1785,12 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
 .hero-art [stroke="#101010"], .choice-art [stroke="#101010"] { stroke: var(--line-strong); }
 .hero-art [fill="#F1F3EA"], .choice-art [fill="#F1F3EA"] { fill: var(--surface-3); }
 .hero-art [fill="#CFEBDD"], .choice-art [fill="#CFEBDD"] { fill: var(--surface-3); }
+/* The Join icon reused hero-art's flattest tone, which made it read as
+   inactive next to Create's solid accent fill. Warm it up so both icons
+   look like intentional, colourful choices rather than one bright and one
+   drab. Same specificity as the shared rule above, so source order alone
+   decides this - it only touches the icon inside .choice-art. */
+.choice-art [fill="#CFEBDD"] { fill: var(--accent-soft); }
 .hero-art [fill="#DEDAF7"], .choice-art [fill="#DEDAF7"] { fill: var(--surface-3); }
 .hero-art [fill="#CCF241"], .choice-art [fill="#CCF241"] { fill: var(--accent); }
 .hero-art [fill="#B2DB26"], .choice-art [fill="#B2DB26"] { fill: var(--accent); }
@@ -1531,9 +1803,34 @@ section.visible { display: block; }
 
 <canvas id="confetti" aria-hidden="true"></canvas>
 
-<!-- Sponsor rails. Only on wide screens, and never over the game itself. -->
-<aside class="rail rail-left" aria-label="Sponsors">
+<!-- Sponsor rail. Only on wide screens, and never over the game itself.
+     Five slots, one column: two are the site's own projects (filled, solid
+     border, logo, link straight out), the other three are still open
+     (dashed border, link to the pitch page). -->
+<aside class="rail rail-right" aria-label="Sponsors">
   <span class="rail-label">Sponsors</span>
+  <a class="sponsor-slot sponsor-slot-filled" href="https://www.getaskonce.com" target="_blank"
+     rel="noopener noreferrer" aria-label="AskOnce">
+    <span class="slot-icon"><img src="/sponsor-logos/askonce.png" alt="" width="38" height="38" /></span>
+    <span class="slot-body">
+      <span class="slot-title">AskOnce</span>
+      <span class="slot-desc">Your AI team: draft, critique, fact-check, decide.</span>
+    </span>
+    <span class="slot-hover" aria-hidden="true">
+      <span class="slot-cta">Visit AskOnce &#8594;</span>
+    </span>
+  </a>
+  <a class="sponsor-slot sponsor-slot-filled" href="https://plateful.naodtadele.com" target="_blank"
+     rel="noopener noreferrer" aria-label="Plateful">
+    <span class="slot-icon"><img src="/sponsor-logos/plateful.png" alt="" width="38" height="38" /></span>
+    <span class="slot-body">
+      <span class="slot-title">Plateful</span>
+      <span class="slot-desc">Turn any recipe video into a real cookbook.</span>
+    </span>
+    <span class="slot-hover" aria-hidden="true">
+      <span class="slot-cta">Visit Plateful &#8594;</span>
+    </span>
+  </a>
   <button class="sponsor-slot" data-page="sponsor" aria-label="Sponsor slot 1, open">
     <span class="slot-icon">&#10022;</span>
     <span class="slot-body">
@@ -1564,84 +1861,11 @@ section.visible { display: block; }
       <span class="slot-cta">Sponsorship details &#8594;</span>
     </span>
   </button>
-  <button class="sponsor-slot" data-page="sponsor" aria-label="Sponsor slot 4, open">
-    <span class="slot-icon">&#10022;</span>
-    <span class="slot-body">
-      <span class="slot-title">Your app</span>
-      <span class="slot-desc">One line about what it does.</span>
-    </span>
-    <span class="slot-hover" aria-hidden="true">
-      <span class="slot-cta">Sponsorship details &#8594;</span>
-    </span>
-  </button>
-  <button class="sponsor-slot" data-page="sponsor" aria-label="Sponsor slot 5, open">
-    <span class="slot-icon">&#10022;</span>
-    <span class="slot-body">
-      <span class="slot-title">Your app</span>
-      <span class="slot-desc">One line about what it does.</span>
-    </span>
-    <span class="slot-hover" aria-hidden="true">
-      <span class="slot-cta">Sponsorship details &#8594;</span>
-    </span>
-  </button>
-</aside>
-<aside class="rail rail-right" aria-label="Sponsors">
-  <span class="rail-label">Sponsors</span>
-  <button class="sponsor-slot" data-page="sponsor" aria-label="Sponsor slot 6, open">
-    <span class="slot-icon">&#10022;</span>
-    <span class="slot-body">
-      <span class="slot-title">Your app</span>
-      <span class="slot-desc">One line about what it does.</span>
-    </span>
-    <span class="slot-hover" aria-hidden="true">
-      <span class="slot-cta">Sponsorship details &#8594;</span>
-    </span>
-  </button>
-  <button class="sponsor-slot" data-page="sponsor" aria-label="Sponsor slot 7, open">
-    <span class="slot-icon">&#10022;</span>
-    <span class="slot-body">
-      <span class="slot-title">Your app</span>
-      <span class="slot-desc">One line about what it does.</span>
-    </span>
-    <span class="slot-hover" aria-hidden="true">
-      <span class="slot-cta">Sponsorship details &#8594;</span>
-    </span>
-  </button>
-  <button class="sponsor-slot" data-page="sponsor" aria-label="Sponsor slot 8, open">
-    <span class="slot-icon">&#10022;</span>
-    <span class="slot-body">
-      <span class="slot-title">Your app</span>
-      <span class="slot-desc">One line about what it does.</span>
-    </span>
-    <span class="slot-hover" aria-hidden="true">
-      <span class="slot-cta">Sponsorship details &#8594;</span>
-    </span>
-  </button>
-  <button class="sponsor-slot" data-page="sponsor" aria-label="Sponsor slot 9, open">
-    <span class="slot-icon">&#10022;</span>
-    <span class="slot-body">
-      <span class="slot-title">Your app</span>
-      <span class="slot-desc">One line about what it does.</span>
-    </span>
-    <span class="slot-hover" aria-hidden="true">
-      <span class="slot-cta">Sponsorship details &#8594;</span>
-    </span>
-  </button>
-  <button class="sponsor-slot" data-page="sponsor" aria-label="Sponsor slot 10, open">
-    <span class="slot-icon">&#10022;</span>
-    <span class="slot-body">
-      <span class="slot-title">Your app</span>
-      <span class="slot-desc">One line about what it does.</span>
-    </span>
-    <span class="slot-hover" aria-hidden="true">
-      <span class="slot-cta">Sponsorship details &#8594;</span>
-    </span>
-  </button>
 </aside>
 
 <nav class="navbar">
   <div class="nav-inner">
-    <div class="logo">vibe<span>wars</span></div>
+    <div class="logo"><span class="logo-vibe">vibe</span><span class="logo-wars">wars</span></div>
     <div class="nav-links">
       <button class="nav-link" data-page="how">How to play</button>
       <button class="nav-link" data-page="scoring">Scoring</button>
@@ -1650,15 +1874,23 @@ section.visible { display: block; }
     </div>
     <div class="nav-right">
       <button id="themeToggle" class="nav-link" aria-label="Switch theme" title="Switch theme">&#9789;</button>
-      <span class="chip chip-ink" id="navPhase" hidden></span>
-      <span class="chip" id="navWho">ANON</span>
-      <button id="leaveBtn" class="btn" style="display:none">&#8592; Leave lobby</button>
     </div>
   </div>
 </nav>
 
 <div class="wrap">
 <p id="error"></p>
+
+<!-- The one place "back" lives, full stop. Every screen that has somewhere to
+     return to renders this exact same button in this exact same slot - never
+     the navbar, never a per-page header, never left on one screen and right on
+     the next. -->
+<div class="page-back" id="pageBack" hidden>
+  <button id="globalBack" class="btn back-fab" type="button">
+    <span class="back-fab-icon">&#8592;</span>
+    <span id="globalBackLabel">Back</span>
+  </button>
+</div>
 
 <!-- 1. entry ------------------------------------------------------------- -->
 <section id="entry" class="visible">
@@ -1671,19 +1903,16 @@ section.visible { display: block; }
         <h1 class="game-title">vibe<em>wars</em></h1>
         <nav class="game-menu" aria-label="Main menu">
           <button class="menu-item" id="menuPlay">
-            <span class="menu-num">01</span><span class="menu-label">Play</span><span class="menu-go">&#8594;</span>
-          </button>
-          <button class="menu-item" id="menuSolo">
-            <span class="menu-num">02</span><span class="menu-label">Solo</span><span class="menu-go">&#8594;</span>
+            <span class="menu-num">01</span><span class="menu-icon" aria-hidden="true">&#127918;</span><span class="menu-label">Play</span><span class="menu-go">&#8594;</span>
           </button>
           <button class="menu-item" id="menuWatch">
-            <span class="menu-num">03</span><span class="menu-label">Watch</span><span class="menu-go">&#8594;</span>
+            <span class="menu-num">02</span><span class="menu-icon" aria-hidden="true">&#128064;</span><span class="menu-label">Watch</span><span class="menu-go">&#8594;</span>
           </button>
           <button class="menu-item" data-page="leaderboard">
-            <span class="menu-num">04</span><span class="menu-label">Leaderboard</span><span class="menu-go">&#8594;</span>
+            <span class="menu-num">03</span><span class="menu-icon" aria-hidden="true">&#127942;</span><span class="menu-label">Leaderboard</span><span class="menu-go">&#8594;</span>
           </button>
           <button class="menu-item" data-page="how">
-            <span class="menu-num">05</span><span class="menu-label">How to play</span><span class="menu-go">&#8594;</span>
+            <span class="menu-num">04</span><span class="menu-icon" aria-hidden="true">&#128214;</span><span class="menu-label">How to play</span><span class="menu-go">&#8594;</span>
           </button>
         </nav>
       </div>
@@ -1736,10 +1965,49 @@ section.visible { display: block; }
 
   </div>
 
-  <!-- 1a2. play: pick your door -->
+  <!-- 1a2. play: solo or multiplayer -->
   <div id="playScreen" hidden>
     <div class="play-head">
-      <button class="btn" id="playBack">&#8592; Menu</button>
+      <span class="meta">No accounts. No passwords. Just play.</span>
+    </div>
+
+    <div class="choice-grid">
+      <button class="choice" id="chooseSolo">
+        <svg class="choice-art" viewBox="0 0 88 88" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="16" y="16" width="56" height="60" rx="14" fill="#DEDAF7" stroke="#101010" stroke-width="4"/>
+          <path d="M16 34h56" stroke="#101010" stroke-width="4"/>
+          <circle cx="30" cy="25" r="3.5" fill="#101010"/>
+          <path d="M44 44v22M33 55h22" stroke="#101010" stroke-width="5" stroke-linecap="round"/>
+          <path d="M68 4 Q70 16 82 18 Q70 20 68 32 Q66 20 54 18 Q66 16 68 4Z" fill="#101010"/>
+        </svg>
+        <span class="choice-body">
+          <span class="choice-title">Solo</span>
+          <span class="choice-sub">Practice against the clock. Nothing is scored, nobody is watching.</span>
+        </span>
+        <span class="choice-go">&#8599;</span>
+      </button>
+
+      <button class="choice" id="chooseMultiplayer">
+        <svg class="choice-art" viewBox="0 0 88 88" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="4" y="20" width="48" height="48" rx="12" fill="#CCF241" stroke="#101010" stroke-width="4"/>
+          <rect x="36" y="12" width="48" height="48" rx="12" fill="#CFEBDD" stroke="#101010" stroke-width="4"/>
+          <path d="M4 34h48" stroke="#101010" stroke-width="3"/>
+          <path d="M36 26h48" stroke="#101010" stroke-width="3"/>
+          <circle cx="16" cy="27" r="3" fill="#101010"/>
+          <circle cx="48" cy="19" r="3" fill="#101010"/>
+        </svg>
+        <span class="choice-body">
+          <span class="choice-title">Multiplayer</span>
+          <span class="choice-sub">Create or join a lobby. Real rivals, one brief, a live vote at the end.</span>
+        </span>
+        <span class="choice-go">&#8599;</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- 1a3. multiplayer: create or join -->
+  <div id="multiplayerScreen" hidden>
+    <div class="play-head">
       <span class="meta">No accounts. No passwords. Just play.</span>
     </div>
 
@@ -1897,14 +2165,12 @@ section.visible { display: block; }
     <div class="card-head"><h3 class="card-title">Roll the challenge</h3><span class="chip chip-accent">Host only</span></div>
     <div class="card-body">
       <p class="muted" style="margin-top:0">
-        Nobody writes the brief, not even you. Pick a topic and a difficulty and the server
-        deals one. Keep rolling until the room groans.
+        Nobody writes the brief, not even you. Pick a topic and the server deals one. Keep
+        rolling until the room groans.
       </p>
       <div class="row" style="align-items:flex-end">
         <label class="field" style="margin:0;flex:1;min-width:180px"><span class="field-label">Topic</span>
           <select id="topicSelect"></select></label>
-        <label class="field" style="margin:0;flex:1;min-width:180px"><span class="field-label">Difficulty</span>
-          <select id="levelSelect"></select></label>
         <label class="field" style="margin:0;width:120px"><span class="field-label">Minutes</span>
           <input id="minutesInput" type="number" min="1" value="7" /></label>
         <button id="rollBtn" class="btn btn-secondary">&#127922; Roll again</button>
@@ -1942,7 +2208,7 @@ section.visible { display: block; }
 
   <div class="card sandbox-card">
     <div class="card-head">
-      <h3 class="card-title">Sandbox</h3>
+      <h3 class="card-title">&#129514; Sandbox</h3>
       <span class="meta" id="usageMeter">No calls yet</span>
     </div>
 
@@ -1991,7 +2257,7 @@ section.visible { display: block; }
 
 <!-- 4 + 5. reveal & voting ----------------------------------------------- -->
 <section id="reveal">
-  <h2 class="section-title">Time to <em>judge</em></h2>
+  <h2 class="section-title">&#128203; Time to <em>judge</em></h2>
 
   <div class="prompt-card" id="promptCardReveal"></div>
 
@@ -2018,7 +2284,7 @@ section.visible { display: block; }
 
 <!-- 6. leaderboard ------------------------------------------------------- -->
 <section id="results">
-  <h2 class="section-title">Leader<em>board</em></h2>
+  <h2 class="section-title">&#127942; Leader<em>board</em></h2>
   <div id="winnerBanner"></div>
   <div class="card">
     <div class="card-head"><h3 class="card-title">Final scores</h3>
@@ -2033,7 +2299,7 @@ section.visible { display: block; }
 
 <!-- 7. practice result (solo only, no scoring) --------------------------- -->
 <section id="practice">
-  <h2 class="section-title">Time<em>'s up</em></h2>
+  <h2 class="section-title">&#9203; Time<em>'s up</em></h2>
   <div class="card">
     <div class="card-head">
       <h3 class="card-title">What you built</h3>
@@ -2045,19 +2311,15 @@ section.visible { display: block; }
               sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe>
     </div>
   </div>
-  <div id="promptCardPractice"></div>
+  <div class="prompt-card" id="promptCardPractice"></div>
   <div class="row" style="margin-top:28px">
     <button id="practiceAgain" class="btn btn-primary btn-lg">Another one &#8635;</button>
-    <button id="practiceQuit" class="btn btn-secondary">&#8592; Back to menu</button>
   </div>
 </section>
 
 <!-- 8. watch: browse live matches --------------------------------------- -->
 <section id="watch">
-  <div class="play-head">
-    <h2 class="section-title" style="margin:0">Live <em>matches</em></h2>
-    <button id="watchBack" class="btn">&#8592; Back</button>
-  </div>
+  <h2 class="section-title">&#128225; Live <em>matches</em></h2>
   <p class="muted" style="margin:-10px 0 22px">Drop in on a battle in progress. You take no seat,
     cast no vote and nobody has to make room for you.</p>
   <div class="card">
@@ -2078,10 +2340,9 @@ section.visible { display: block; }
     </div>
     <div class="row">
       <span class="chip chip-accent" id="spectateClock" hidden></span>
-      <button id="spectateLeave" class="btn">&#8592; Stop watching</button>
     </div>
   </div>
-  <div id="promptCardSpectate"></div>
+  <div class="prompt-card" id="promptCardSpectate"></div>
   <div id="spectateWinner"></div>
   <div class="card" id="spectateScoresCard" hidden>
     <div class="card-head"><h3 class="card-title">Final scores</h3></div>
@@ -2090,11 +2351,20 @@ section.visible { display: block; }
   <h2 class="section-title" id="spectateGridTitle">Builds</h2>
   <div id="spectateGrid"></div>
 </section>
+
+<!-- 10. info pages: how to play, scoring, keys, sponsor, about, leaderboard.
+     A real page like everything else - takes the same back-button slot, and
+     going back returns you to exactly the screen (menu, wizard step, live
+     battle) you had open before. -->
+<section id="infoPage">
+  <h2 class="section-title" id="infoPageTitle"></h2>
+  <div class="info-body" id="infoPageBody"></div>
+</section>
 </div>
 
 <footer class="site-footer">
   <div class="footer-inner">
-    <span class="footer-brand"><span class="logo footer-logo">vibe<span>wars</span></span>
+    <span class="footer-brand"><span class="logo footer-logo"><span class="logo-vibe">vibe</span><span class="logo-wars">wars</span></span>
       <span class="meta">Vibe coding game</span></span>
     <div class="footer-links">
       <button class="nav-link" data-page="how">How to play</button>
@@ -2103,21 +2373,9 @@ section.visible { display: block; }
       <button class="nav-link" data-page="about">About</button>
       <a class="nav-link" href="https://github.com/naodt1/vibewars" target="_blank" rel="noopener">Source</a>
     </div>
-    <span class="meta">&#169; 2026 Naod Tadele &#183; MIT licensed &#183; no accounts, no passwords</span>
+    <span class="meta">&#169; 2026 vibewars &#183; MIT licensed</span>
   </div>
 </footer>
-
-<!-- Info pages, opened as a sheet so a battle in progress is never disturbed. -->
-<div id="sheet" hidden>
-  <div class="sheet-backdrop" data-close-sheet></div>
-  <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
-    <div class="sheet-head">
-      <h2 class="card-title" id="sheetTitle"></h2>
-      <button class="btn" data-close-sheet aria-label="Close">Close &#10005;</button>
-    </div>
-    <div class="sheet-body" id="sheetBody"></div>
-  </div>
-</div>
 
 <template id="page-how">
   <div id="guide" class="guide"></div>
@@ -2191,22 +2449,22 @@ section.visible { display: block; }
       leaderboard.</li>
     <li>No ad network sits between you and the page. Static markup rendered by the site itself,
       nothing that phones home, nothing that slows the game down.</li>
-    <li>The rails sit clear of the arena on either side, so a sponsor is always visible and never
-      in the way of play.</li>
+    <li>The rail sits clear of the arena, so a sponsor is always visible and never in the way of
+      play.</li>
   </ul>
 
   <h3>What a slot looks like</h3>
-  <p>An icon, your app's name, and a one-line description. Ten slots total, five either side.</p>
+  <p>An icon, your app's name, and a one-line description. Five slots total, one column.</p>
 
   <h3>Booked by the month, not the click</h3>
-  <p>There are ten of these, ever - not ten per month, ten total. A slot is held for its sponsor
+  <p>There are five of these, ever - not five per month, five total. A slot is held for its sponsor
     for the calendar month and doesn't turn over until they let it go, so the board fills up and
     then it's full. <span class="slot-price-inline">$1,500/mo</span> per slot, first come first
     served, no long-term contract required to hold your place.</p>
   <p><a class="btn btn-primary" href="https://github.com/naodt1/vibewars/issues" target="_blank" rel="noopener">Book this month's slot &#8599;</a></p>
   <p class="muted">Slots are claimed by pull request against the repository, so the whole roster is
     public and auditable. Open an issue to start a conversation.</p>
-  <p class="muted">Nothing here is sold yet - every slot on the page is a placeholder.</p>
+  <p class="muted">Two of the five are the site's own projects. The other three are open.</p>
 </template>
 
 <template id="page-about">

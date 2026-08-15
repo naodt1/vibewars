@@ -33,6 +33,110 @@ const MAX_LOBBIES = 200; // total live lobbies, server-wide
 const RATE_WINDOW_MS = 10000;
 const RATE_MAX_MESSAGES = 300;
 
+/* House keys: a shared, server-held key per provider so the sandbox works
+ * with no setup, funded by whoever runs this instance rather than by each
+ * player. This is real money on someone else's card, so every knob here
+ * exists to keep a single greedy tab (or a bug) from draining it:
+ *   - scoped to one round per participant, not the whole session
+ *   - capped in size, so nobody pays for one enormous prompt
+ *   - capped server-wide, so many lobbies at once cannot add up unbounded
+ * A provider only goes live if BOTH its key and its model are set - there is
+ * deliberately no hardcoded model id here. The model landscape moves too
+ * fast to guess correctly, and a wrong guess fails on every single request
+ * rather than once at review time. */
+const HOUSE_CALLS_PER_ROUND = 6;
+const HOUSE_MAX_PROMPT_CHARS = 4000; // one user message
+const HOUSE_MAX_PAYLOAD_CHARS = 24000; // the whole running conversation sent up
+const HOUSE_WINDOW_MS = 60000;
+const HOUSE_MAX_CALLS_PER_WINDOW = 60; // across every lobby combined
+
+const HOUSE_PROVIDERS = {
+  openai: {
+    key: process.env.HOUSE_OPENAI_API_KEY,
+    model: process.env.HOUSE_OPENAI_MODEL,
+    url: () => 'https://api.openai.com/v1/chat/completions',
+    headers: (key) => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }),
+    body: (model, messages) => ({ model, messages, max_tokens: 4096 }),
+    text: (j) => j.choices?.[0]?.message?.content || '',
+    usage: (j) => ({ in: j.usage?.prompt_tokens || 0, out: j.usage?.completion_tokens || 0 }),
+  },
+  anthropic: {
+    key: process.env.HOUSE_ANTHROPIC_API_KEY,
+    model: process.env.HOUSE_ANTHROPIC_MODEL,
+    url: () => 'https://api.anthropic.com/v1/messages',
+    headers: (key) => ({
+      'Content-Type': 'application/json',
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+    }),
+    body: (model, messages) => ({
+      model,
+      max_tokens: 4096,
+      system: messages.find((m) => m.role === 'system')?.content,
+      messages: messages.filter((m) => m.role !== 'system'),
+    }),
+    text: (j) => (j.content || []).filter((c) => c.type === 'text').map((c) => c.text).join(''),
+    usage: (j) => ({ in: j.usage?.input_tokens || 0, out: j.usage?.output_tokens || 0 }),
+  },
+  google: {
+    key: process.env.HOUSE_GOOGLE_API_KEY,
+    model: process.env.HOUSE_GOOGLE_MODEL,
+    url: (key, model) =>
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
+    headers: () => ({ 'Content-Type': 'application/json' }),
+    body: (model, messages) => {
+      const sys = messages.find((m) => m.role === 'system');
+      return {
+        systemInstruction: sys ? { parts: [{ text: sys.content }] } : undefined,
+        contents: messages
+          .filter((m) => m.role !== 'system')
+          .map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
+      };
+    },
+    text: (j) => (j.candidates?.[0]?.content?.parts || []).map((x) => x.text || '').join(''),
+    usage: (j) => ({
+      in: j.usageMetadata?.promptTokenCount || 0,
+      out: j.usageMetadata?.candidatesTokenCount || 0,
+    }),
+  },
+  xai: {
+    key: process.env.HOUSE_XAI_API_KEY,
+    model: process.env.HOUSE_XAI_MODEL,
+    url: () => 'https://api.x.ai/v1/chat/completions',
+    headers: (key) => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }),
+    body: (model, messages) => ({ model, messages, max_tokens: 4096 }),
+    text: (j) => j.choices?.[0]?.message?.content || '',
+    usage: (j) => ({ in: j.usage?.prompt_tokens || 0, out: j.usage?.completion_tokens || 0 }),
+  },
+};
+
+/** A provider is house-enabled only when both its key and model are set. */
+function houseEnabled(providerId) {
+  const p = HOUSE_PROVIDERS[providerId];
+  return !!(p && p.key && p.model);
+}
+
+for (const id of Object.keys(HOUSE_PROVIDERS)) {
+  if (HOUSE_PROVIDERS[id].key && !HOUSE_PROVIDERS[id].model) {
+    console.warn(
+      `HOUSE_${id.toUpperCase()}_API_KEY is set but HOUSE_${id.toUpperCase()}_MODEL is not - ` +
+        `that provider stays off. Set both to enable it.`
+    );
+  }
+}
+
+// Global sliding window across every house-key call, regardless of lobby.
+let houseWindowStart = Date.now();
+let houseWindowCalls = 0;
+function houseGlobalBudgetOk() {
+  const now = Date.now();
+  if (now - houseWindowStart > HOUSE_WINDOW_MS) {
+    houseWindowStart = now;
+    houseWindowCalls = 0;
+  }
+  return houseWindowCalls < HOUSE_MAX_CALLS_PER_WINDOW;
+}
+
 const CRITERIA = ['requirements', 'functionality', 'aesthetic', 'approach'];
 const CRITERIA_LABELS = {
   requirements: 'Requirements Met',
@@ -43,84 +147,142 @@ const CRITERIA_LABELS = {
 
 // ------------------------------------------------------ prompt generator ----
 
-// Challenges are rolled by the server, not written by the host. The host only
-// picks a topic and a difficulty; the exact brief is always a surprise.
+// Challenges are rolled by the server, not written by the host. The host
+// only picks a topic; the exact brief is always a surprise. Each entry
+// already carries its own (optional) constraint, so there is no separate
+// difficulty axis to mix in.
 const TOPICS = {
-  SPEED: [
-    { context: 'A boutique sneaker shop.', task: 'Build the size picker and add-to-cart panel.', flavour: 'Heavy type, raw edges, high contrast.' },
-    { context: 'A hyper-local weather app.', task: 'Build the 7-day forecast strip and current conditions.', flavour: 'Massive numbers, monochrome, sharp borders.' },
-    { context: 'A tip and bill splitter.', task: 'Build the amount entry and per-person breakdown.', flavour: 'One screen, no scrolling, thumb friendly.' },
-    { context: 'A bedside alarm clock.', task: 'Build the set-alarm screen and the active alarm display.', flavour: 'Glowing numerals on a pitch black canvas.' },
-    { context: 'A unit converter for cooking.', task: 'Build the conversion input and the live result list.', flavour: 'Kitchen-legible: big targets, greasy-thumb proof.' },
+  EASY: [
+    { productName: "PlantMind", challenge: "Fake Startup", task: "Build a landing page for an AI that can understand what houseplants are thinking.", constraints: ["Include a hero section, features, pricing, and a call-to-action."] },
+    { productName: "BananaMatch", challenge: "Ridiculous Dating App", task: "Build a dating app where bananas can find their perfect match.", constraints: ["Include profiles, matching, likes, and at least one match."] },
+    { productName: "VillainHire", challenge: "Supervillain Portfolio", task: "Build a professional portfolio website for a supervillain looking for work.", constraints: ["Include their skills, previous crimes, achievements, and contact section."] },
+    { productName: "PremiumAir", challenge: "Useless Product", task: "Build an ecommerce page selling premium air in different flavors.", constraints: ["Include product variants, pricing, benefits, and checkout."] },
+    { productName: "Procrastinati", challenge: "Fake University", task: "Build the website for the world's leading university for procrastination.", constraints: ["Include courses, professors, campus life, and an application page."] },
+    { productName: "SockSwap", challenge: "Niche Marketplace", task: "Build a marketplace where people can trade their unmatched socks.", constraints: ["Include listings, search, categories, and a listing detail page."] },
+    { productName: "PawCEO", challenge: "Pet Business", task: "Build a corporate website for a dog that runs a billion-dollar company.", constraints: ["Include about, services, leadership, investors, and press sections."] },
+    { productName: "MoonTrip", challenge: "Travel Website", task: "Build a travel booking website for the first commercial trips to the moon.", constraints: ["Include destinations, packages, pricing, and booking."] },
+    { productName: "SnackStack", challenge: "Food App", task: "Build an app that helps people decide what snack to eat.", constraints: ["Include categories, random selection, and a personalized recommendation."] },
+    { productName: "VillainJobs", challenge: "Job Board", task: "Build a job board for completely ridiculous professions.", constraints: ["Include job cards, search, filters, and an application flow."] },
+    { productName: "FakeFlix", challenge: "Streaming Platform", task: "Build a streaming platform containing movies that don't exist.", constraints: ["Include categories, movie cards, search, and a movie detail page."] },
+    { productName: "SleepBank", challenge: "Finance App", task: "Build a banking app where users can deposit, withdraw, and spend hours of sleep.", constraints: ["Include balance, transactions, transfers, and a dashboard."] },
+    { productName: "AlienAir", challenge: "Airline Website", task: "Build an airline website for an alien civilization.", constraints: ["Include destinations, flights, booking, and strange travel rules."] },
+    { productName: "Ghostbnb", challenge: "Hotel Platform", task: "Build a hotel booking platform for haunted houses.", constraints: ["Include listings, ratings, prices, amenities, and booking."] },
+    { productName: "PetFlix", challenge: "Entertainment Platform", task: "Build a streaming platform designed specifically for pets.", constraints: ["Include animal profiles, personalized recommendations, and categories."] },
+    { productName: "Coffeebucks", challenge: "Coffee Brand", task: "Build a coffee shop website for people who absolutely hate mornings.", constraints: ["Include menu, ordering, locations, and a loyalty program."] },
+    { productName: "VillainMart", challenge: "Online Store", task: "Build an ecommerce store selling gadgets for aspiring supervillains.", constraints: ["Include product listings, product details, cart, and checkout."] },
+    { productName: "TimeTour", challenge: "Travel Planner", task: "Build a travel booking website for time travelers.", constraints: ["Users must be able to choose a destination year and book a trip."] },
+    { productName: "MoodMeals", challenge: "Recipe App", task: "Build a recipe app that recommends food based entirely on your mood.", constraints: ["Include moods, recipes, filters, and a recommendation system."] },
+    { productName: "SleepFit", challenge: "Fitness App", task: "Build a fitness app for people whose primary exercise is sleeping.", constraints: ["Include workouts, progress tracking, goals, and achievements."] },
+    { productName: "DoomDaily", challenge: "News Website", task: "Build a news website reporting breaking news from a world where everything is slightly wrong.", constraints: ["Include headlines, categories, articles, and trending stories."] },
+    { productName: "AlienAcademy", challenge: "Education Platform", task: "Build an online learning platform teaching humans how to communicate with aliens.", constraints: ["Include courses, lessons, progress, and certificates."] },
+    { productName: "MysteryBox", challenge: "Subscription Service", task: "Build a subscription service that sends users one completely random object every month.", constraints: ["Include subscription tiers, previous boxes, and checkout."] },
+    { productName: "PigeonPost", challenge: "Communication App", task: "Build a modern messaging app where messages are delivered by pigeons.", constraints: ["Include conversations, contacts, message sending, and delivery status."] },
+    { productName: "DreamAir", challenge: "Luxury Brand", task: "Build a luxury brand selling bottled dreams.", constraints: ["Include products, story, pricing, and a premium checkout."] },
+    { productName: "RentAFriend", challenge: "Marketplace", task: "Build a marketplace where people can temporarily rent a friend for different activities.", constraints: ["Include profiles, categories, availability, and booking."] },
+    { productName: "CloudCafe", challenge: "Restaurant Website", task: "Build a restaurant website for a cafe located above the clouds.", constraints: ["Include menu, reservations, location, and atmosphere."] },
+    { productName: "PlanetPost", challenge: "Social Network", task: "Build a social network where planets have their own profiles and interact with each other.", constraints: ["Include profiles, posts, likes, comments, and trending topics."] },
+    { productName: "FutureFind", challenge: "Marketplace", task: "Build an ecommerce marketplace selling products from the year 2100.", constraints: ["Include categories, product pages, cart, and checkout."] },
+    { productName: "OddlySpecific", challenge: "Community Platform", task: "Build an online community for people with an extremely specific shared interest.", constraints: ["Include profiles, posts, comments, and discovery."] },
   ],
-  CREATIVE: [
-    { context: 'A space travel booking site.', task: 'Build the planet picker and ticket summary.', flavour: 'Retro-futurism, HUD panels, neon on deep space.' },
-    { context: 'A potion vending machine.', task: 'Build the flavour selector and the dispensing animation.', flavour: 'Mystical purples and golds, glass vial shapes.' },
-    { context: 'A dating app for ghosts.', task: 'Build the match card stack and the profile detail.', flavour: 'Frosted, floating, pale blues, soft glow.' },
-    { context: 'A smart mirror for vampires.', task: 'Build the nightly schedule and reflection toggle.', flavour: 'Gothic chic: blood red, absolute black, ornate framing.' },
-    { context: 'A museum of imaginary animals.', task: 'Build the exhibit browser and a creature detail card.', flavour: 'Editorial layout, generous whitespace, serif headlines.' },
-  ],
-  UX: [
-    { context: 'An emergency dispatch console.', task: 'Build the incident queue and the responder assignment panel.', flavour: 'Glanceable under stress. Unmistakable targets.' },
-    { context: 'A stock trading terminal.', task: 'Build the watchlist table and the quick-trade widget.', flavour: 'Information dense, strict grid, monospaced numerals.' },
-    { context: 'An ER triage board.', task: 'Build the patient queue and a critical vitals card.', flavour: 'Colour-coded urgency, nothing ambiguous.' },
-    { context: 'A city transit planner.', task: 'Build the next-departure board and the route input.', flavour: 'High contrast, never rely on colour alone.' },
-    { context: 'A password manager.', task: 'Build the vault list and the entry detail with reveal.', flavour: 'Calm, trustworthy, obvious affordances.' },
-  ],
-  GAMES: [
-    { context: 'A browser toy nobody asked for.', task: 'Build a working memory match game with a move counter.', flavour: 'Must actually be playable, not a mockup.' },
-    { context: 'An arcade cabinet screen.', task: 'Build a reaction-time tester with a high score list.', flavour: 'CRT glow, chunky pixels, coin-op energy.' },
-    { context: 'A pub quiz machine.', task: 'Build a 5-question quiz with scoring and a result screen.', flavour: 'Loud, colourful, slightly obnoxious.' },
-    { context: 'A tabletop companion.', task: 'Build a dice roller with history and custom dice sides.', flavour: 'Feels physical: weight, shadow, satisfying press.' },
-    { context: 'A typing trainer.', task: 'Build a words-per-minute test with live accuracy.', flavour: 'Distraction free, focus on the text itself.' },
-  ],
-  DATA: [
-    { context: 'A personal finance tracker.', task: 'Build a spending-by-category breakdown with a total.', flavour: 'Charts drawn by hand: no chart libraries.' },
-    { context: 'A server status page.', task: 'Build the uptime grid and the incident timeline.', flavour: 'Calm greens, honest reds, scannable at a glance.' },
-    { context: 'A habit tracker.', task: 'Build the streak calendar and a per-habit summary.', flavour: 'A year of data on one screen without clutter.' },
-    { context: 'A race results board.', task: 'Build the live standings table with position changes.', flavour: 'Broadcast graphics energy, tabular numerals.' },
-    { context: 'A warehouse dashboard.', task: 'Build the stock level list with reorder warnings.', flavour: 'Industrial, dense, built for a wall-mounted screen.' },
+  CONSTRAINTS: [
+    { productName: "ChaosMix", challenge: "Three Words", task: "Build a website inspired by three random words.", constraints: ["All three words must visibly influence the final website."] },
+    { productName: "EmojiWorld", challenge: "One Emoji", task: "Turn a single emoji into a complete web experience.", constraints: ["The emoji is the only starting inspiration."] },
+    { productName: "Mono", challenge: "One Color", task: "Build a complete website using only one color and its shades.", constraints: ["No additional accent colors."] },
+    { productName: "NoPic", challenge: "No Images", task: "Build a visually impressive website without using any images.", constraints: ["Use only typography, CSS, shapes, gradients, and interaction."] },
+    { productName: "Silent", challenge: "No Text", task: "Build a website that communicates its purpose without written words.", constraints: ["Users must understand what to do through visuals and interaction."] },
+    { productName: "One", challenge: "One Button", task: "Build an entire web experience around a single button.", constraints: ["The button must have meaningful behavior."] },
+    { productName: "Viewport", challenge: "One Screen", task: "Build an entire product experience inside a single screen.", constraints: ["No scrolling."] },
+    { productName: "Web2003", challenge: "Retro Web", task: "Build a website that feels like it was made in 2003.", constraints: ["Use authentic early-web visual conventions."] },
+    { productName: "Web2050", challenge: "Future Web", task: "Build a website that looks like it came from 2050.", constraints: ["Make it feel like a believable evolution of the web."] },
+    { productName: "Brutal", challenge: "Web Brutalism", task: "Build a brutalist website for a completely normal product.", constraints: ["Avoid polished SaaS aesthetics."] },
+    { productName: "LuxuryOS", challenge: "Luxury", task: "Make an ordinary product look like an ultra-premium luxury brand.", constraints: ["The product itself must remain ordinary."] },
+    { productName: "UglyWeb", challenge: "Ugliest Website", task: "Build the ugliest website possible while keeping it functional.", constraints: ["Intentionally break modern design conventions."] },
+    { productName: "Minimal", challenge: "Extreme Minimalism", task: "Build a useful website using as little visual material as possible.", constraints: ["Maximum three colors, two fonts, and five major visible elements."] },
+    { productName: "Type", challenge: "Typography Only", task: "Build a website where typography is the primary visual experience.", constraints: ["Images should play almost no role."] },
+    { productName: "Motion", challenge: "Animation", task: "Build a website where animation is the main attraction.", constraints: ["Every major animation must respond to user interaction."] },
+    { productName: "SoundWeb", challenge: "Sound", task: "Build a web experience where sound plays an important role.", constraints: ["The website must still work without sound."] },
+    { productName: "Physical", challenge: "Physical Object", task: "Turn an ordinary physical object into an interactive website.", constraints: ["The object should remain recognizable."] },
+    { productName: "RealUI", challenge: "Real-World Interface", task: "Recreate a familiar physical interface as a website.", constraints: ["Examples include an airport board, vending machine, arcade cabinet, or restaurant menu."] },
+    { productName: "WikiWarp", challenge: "Wikipedia", task: "Transform a random Wikipedia article into an entirely different web experience.", constraints: ["The original subject must still be recognizable."] },
+    { productName: "PixelPerfect", challenge: "Screenshot Recreation", task: "Recreate a provided website screenshot as accurately as possible.", constraints: ["Do not inspect the original website or source code."] },
+    { productName: "MemoryWeb", challenge: "Memory Recreation", task: "Recreate a familiar website entirely from memory.", constraints: ["The original website cannot be viewed during the challenge."] },
+    { productName: "Opposite", challenge: "Opposite Audience", task: "Take a familiar product and redesign it for its complete opposite audience.", constraints: ["The original product should still be recognizable."] },
+    { productName: "PirateNet", challenge: "Genre Swap", task: "Redesign a familiar modern website as if it belonged to pirates.", constraints: ["The original product's core purpose must remain intact."] },
+    { productName: "RandomUser", challenge: "Random Audience", task: "Build a website specifically for an extremely unusual audience.", constraints: ["The audience must influence the product, language, and interface."] },
+    { productName: "NoScroll", challenge: "Fixed Canvas", task: "Build a complete interactive experience without scrolling.", constraints: ["Everything must happen inside one fixed canvas."] },
+    { productName: "TinyUI", challenge: "Five Components", task: "Build a useful product using only five major UI components.", constraints: ["You must choose exactly five."] },
+    { productName: "MobileFirst", challenge: "Mobile Only", task: "Build a website designed specifically for a phone.", constraints: ["Desktop layouts should not be the focus."] },
+    { productName: "Desktop", challenge: "Desktop Only", task: "Build an experience that takes advantage of a large desktop screen.", constraints: ["The design should intentionally use horizontal space."] },
+    { productName: "GenreShift", challenge: "Genre Transformation", task: "Take a normal product and completely change its visual genre.", constraints: ["The core functionality must remain recognizable."] },
+    { productName: "ImpossibleUI", challenge: "Impossible Interface", task: "Build a web interface that could never exist as a normal physical interface.", constraints: ["Take advantage of the fact that this is software."] },
   ],
   CHAOS: [
-    { context: "A hacker collective's chat client.", task: 'Build the channel list and the message composer.', flavour: 'Green on black, monospace, ascii borders.' },
-    { context: 'A malfunctioning robot control panel.', task: 'Build the error log and the reboot sequence.', flavour: 'Glitched, overlapping, jarring diagonals.' },
-    { context: 'A social network for dogs.', task: 'Build the feed and the "sniff" interaction.', flavour: 'Absurdly oversized, primary colours only.' },
-    { context: 'A doomsday device.', task: 'Build the countdown and the final authorisation modal.', flavour: 'Cold, industrial, menacing typography.' },
-    { context: 'A vending machine possessed by a spirit.', task: 'Build the product grid and the haunted checkout.', flavour: 'It should argue with the user.' },
+    { productName: "Pointless", challenge: "Useless Website", task: "Build a website that has absolutely no useful purpose but is impossible not to interact with.", constraints: [] },
+    { productName: "RoastMe", challenge: "Insult Generator", task: "Build a website that progressively roasts the user as they interact with it.", constraints: ["Keep the humor playful and fictional."] },
+    { productName: "MoonCoin", challenge: "Fake Scam", task: "Build a completely fictional investment website promising an absurd opportunity.", constraints: ["Make it look suspiciously convincing while clearly being fictional."] },
+    { productName: "PigeonTruth", challenge: "Conspiracy Board", task: "Build an interactive conspiracy theory website proving that pigeons are secretly running society.", constraints: ["Include connected evidence, documents, and theories."] },
+    { productName: "WorstUX", challenge: "Bad UX", task: "Build the worst user experience imaginable.", constraints: ["The website must technically remain usable."] },
+    { productName: "WhyMe", challenge: "Gaslighting UI", task: "Build an interface that constantly makes the user question what just happened.", constraints: ["Keep it playful rather than genuinely frustrating."] },
+    { productName: "AngryApp", challenge: "Angry Website", task: "Build a website that becomes increasingly angry the more the user interacts with it.", constraints: [] },
+    { productName: "Passive", challenge: "Passive Aggression", task: "Build a website that communicates entirely through passive-aggressive messages.", constraints: [] },
+    { productName: "WrongWeb", challenge: "Everything Is Wrong", task: "Build a completely normal website where every tiny detail is slightly incorrect.", constraints: ["The mistakes should be intentional and discoverable."] },
+    { productName: "PotatoAuth", challenge: "Pointless Login", task: "Build a website requiring an absurd authentication process to access something completely useless.", constraints: ["The final reward should be hilariously pointless."] },
+    { productName: "Infinite", challenge: "Infinite Button", task: "Build a button that becomes increasingly ridiculous every time it is clicked.", constraints: [] },
+    { productName: "DoomClock", challenge: "Doomsday App", task: "Build a dashboard showing the fictional end of the world.", constraints: ["Include a countdown, alerts, and live-looking metrics."] },
+    { productName: "AlienOS", challenge: "Alien Website", task: "Build a website designed by aliens who fundamentally misunderstand humans.", constraints: [] },
+    { productName: "WrongYear", challenge: "Time Traveler", task: "Build a website belonging to someone who accidentally traveled to the wrong year.", constraints: ["The website should reveal clues about where and when they are."] },
+    { productName: "Alive", challenge: "Sentient Website", task: "Build a website that genuinely believes it is alive.", constraints: [] },
+    { productName: "Me.com", challenge: "Website About Itself", task: "Build a website whose entire subject is the website itself.", constraints: ["The website should have a personality."] },
+    { productName: "SockCorp", challenge: "Corporate Nonsense", task: "Build an extremely serious corporate website for a company solving the problem of lost socks.", constraints: [] },
+    { productName: "SandwichOS", challenge: "Overengineering", task: "Build an absurdly complicated interface for choosing what sandwich to eat.", constraints: ["Include unnecessary settings, analytics, and decision-making steps."] },
+    { productName: "DefinitelyNotWatching", challenge: "Paranoia", task: "Build a fictional website that behaves as if it knows suspiciously much about the user.", constraints: ["Use only randomly generated or fictional information."] },
+    { productName: "NPCWeb", challenge: "NPC Website", task: "Build a website that behaves like an NPC from a video game.", constraints: [] },
+    { productName: "RepublicOfNothing", challenge: "Fake Government", task: "Build the official government website of an absurd fictional country.", constraints: ["Include government departments, laws, services, and national information."] },
+    { productName: "CrisisOS", challenge: "Crisis Simulator", task: "Build a dashboard where an increasingly ridiculous fictional crisis unfolds in real time.", constraints: [] },
+    { productName: "OneStar", challenge: "Terrible Product", task: "Build a product page for something that has terrible reviews but somehow keeps selling.", constraints: ["Include reviews and customer complaints."] },
+    { productName: "Honestly", challenge: "Overly Honest", task: "Build a brutally honest landing page for a product that nobody really needs.", constraints: [] },
+    { productName: "PremiumEverything", challenge: "Everything Is Premium", task: "Build a website where every tiny feature is locked behind an absurd premium tier.", constraints: [] },
+    { productName: "CheckoutHell", challenge: "Confusing Checkout", task: "Build an unnecessarily complicated ecommerce checkout experience.", constraints: ["The user must eventually be able to complete the purchase."] },
+    { productName: "BadGPT", challenge: "Bad AI", task: "Build an AI assistant that is hilariously terrible at its job.", constraints: ["It must respond interactively to user input."] },
+    { productName: "BreakingBanana", challenge: "Fake Breaking News", task: "Build a breaking-news website covering an absurd fictional event.", constraints: ["Make it feel like a real news site."] },
+    { productName: "ExistCalc", challenge: "Existential Calculator", task: "Build a calculator that answers ridiculous questions about the user's life.", constraints: ["Example: How many Mondays have you wasted?"] },
+    { productName: "DoNotClick", challenge: "Do Not Click", task: "Build a website centered around a giant button labeled DO NOT CLICK.", constraints: ["Clicking it must trigger an escalating sequence of events."] },
+  ],
+  GAMES: [
+    { productName: "OneTap", challenge: "One Button Game", task: "Build a complete game that can only be controlled with one button.", constraints: [] },
+    { productName: "TenSeconds", challenge: "10 Second Game", task: "Build a game that lasts exactly ten seconds.", constraints: [] },
+    { productName: "Reflex", challenge: "Reaction Test", task: "Build a reaction-time game where players compete for the fastest score.", constraints: [] },
+    { productName: "CookieEmpire", challenge: "Clicker", task: "Build an addictive incremental clicker game.", constraints: ["Include at least three upgrades."] },
+    { productName: "FlapRush", challenge: "Flying Game", task: "Build a simple one-button flying game where the player avoids obstacles.", constraints: [] },
+    { productName: "Dodge", challenge: "Survival Game", task: "Build a game where the player survives increasingly difficult obstacles.", constraints: [] },
+    { productName: "MemoryRush", challenge: "Memory Game", task: "Build a fast-paced memory game that tests how much the player can remember.", constraints: [] },
+    { productName: "TypeRace", challenge: "Typing Game", task: "Build a competitive typing game where players race against the clock.", constraints: [] },
+    { productName: "AimRush", challenge: "Aim Trainer", task: "Build a browser-based aiming and reaction challenge.", constraints: [] },
+    { productName: "Higher", challenge: "Higher or Lower", task: "Build a game where players predict whether the next number will be higher or lower.", constraints: [] },
+    { productName: "WordTrap", challenge: "Word Game", task: "Build a fast word guessing game with one original mechanic.", constraints: [] },
+    { productName: "MiniGolf", challenge: "Mini Golf", task: "Build a single-hole mini-golf game playable entirely in the browser.", constraints: [] },
+    { productName: "Penalty", challenge: "Penalty Shootout", task: "Build a penalty shootout game where players compete against a goalkeeper.", constraints: [] },
+    { productName: "RPSPlus", challenge: "Rock Paper Scissors", task: "Build a Rock Paper Scissors game with one completely original twist.", constraints: [] },
+    { productName: "CoinChaos", challenge: "Coin Flip", task: "Turn a simple coin flip into a strategic game.", constraints: [] },
+    { productName: "CursorHunter", challenge: "Avoid The Cursor", task: "Build a game where the player must prevent an enemy from catching their cursor.", constraints: [] },
+    { productName: "ImpossibleClick", challenge: "Impossible Button", task: "Build a game where the player has to successfully click an increasingly difficult target.", constraints: [] },
+    { productName: "Balance", challenge: "Balance Game", task: "Build a game where the player must keep an object balanced for as long as possible.", constraints: [] },
+    { productName: "PerfectMoment", challenge: "Timing Game", task: "Build a game where players must stop an animation at exactly the right moment.", constraints: [] },
+    { productName: "Pattern", challenge: "Pattern Game", task: "Build a game where players identify increasingly complicated patterns.", constraints: [] },
+    { productName: "TinyEscape", challenge: "Escape Room", task: "Build a tiny escape room that can be solved in under two minutes.", constraints: [] },
+    { productName: "WeirdTrivia", challenge: "Trivia Game", task: "Build a rapid-fire trivia game focused on strange and unexpected questions.", constraints: [] },
+    { productName: "RiskIt", challenge: "Risk Game", task: "Build a game where players repeatedly choose between a safe reward and a risky reward.", constraints: [] },
+    { productName: "DoubleOrNothing", challenge: "Luck Game", task: "Build a game where players decide how much to risk before revealing the outcome.", constraints: [] },
+    { productName: "Grow", challenge: "Growing Game", task: "Build a game where an object grows every time the player succeeds.", constraints: [] },
+    { productName: "BossRush", challenge: "Boss Fight", task: "Build a tiny boss fight that can be completed in under two minutes.", constraints: [] },
+    { productName: "MazeMouse", challenge: "Cursor Maze", task: "Build a maze that must be completed using only the mouse.", constraints: [] },
+    { productName: "Speedrun", challenge: "Speedrun", task: "Build a tiny game where the goal is to achieve the fastest possible completion time.", constraints: [] },
+    { productName: "BotBattle", challenge: "AI Opponent", task: "Build a simple browser game where the player competes against a computer opponent.", constraints: [] },
+    { productName: "RuleBreak", challenge: "Chaos Game", task: "Build a game where the rules randomly change while the player is playing.", constraints: [] },
   ],
 };
 
-const CONSTRAINTS = {
-  1: [
-    'Make it genuinely usable, nothing decorative-only.',
-    'It has to work on a phone-sized screen.',
-    'Every control needs a visible label.',
-  ],
-  2: [
-    'Black and white only.',
-    'Everything must fit on one screen, no scrolling.',
-    'Maximum three font sizes.',
-    'No rounded corners anywhere.',
-    'Every control must be reachable by keyboard.',
-  ],
-  3: [
-    'No text labels at all: shapes and icons only.',
-    'No <button> elements allowed.',
-    'The whole UI must fit in a 300x300 box.',
-    'CSS only, not a single line of JavaScript.',
-    'The primary action must be hidden until hover or focus.',
-  ],
-  4: [
-    'Comic Sans or Papyrus, exclusively.',
-    'Something on screen must never stop moving.',
-    'All numbers must be shown as tally marks.',
-    'Every colour must be a shade of the same hue.',
-    'The user must solve a maths problem before the main action unlocks.',
-  ],
-};
-
-const LEVEL_NAMES = { 1: 'Warmup', 2: 'Tricky', 3: 'Hard', 4: 'Chaos' };
-const LEVEL_MINUTES = { 1: 5, 2: 7, 3: 10, 4: 12 };
+const DEFAULT_MINUTES = 8;
 
 function pickRandom(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
@@ -130,32 +292,26 @@ function pickRandom(arr) {
  * Roll a challenge. `topic` may be 'RANDOM'. Returns the structured brief plus a
  * flattened text version for anything that just wants a string.
  */
-function generatePrompt(topic, level) {
+function generatePrompt(topic) {
   const topicNames = Object.keys(TOPICS);
   const chosenTopic = TOPICS[topic] ? topic : pickRandom(topicNames);
-  const lvl = [1, 2, 3, 4].includes(level) ? level : 1 + Math.floor(Math.random() * 4);
-
-  const scenario = pickRandom(TOPICS[chosenTopic]);
-  const pool = [...CONSTRAINTS[lvl]].sort(() => 0.5 - Math.random());
-  const count = lvl === 1 ? 1 : 2;
-  const constraints = pool.slice(0, count);
+  const entry = pickRandom(TOPICS[chosenTopic]);
 
   const text =
-    `CONTEXT\n${scenario.context}\n\n` +
-    `TASK\n${scenario.task}\n\n` +
-    `VIBE\n${scenario.flavour}\n\n` +
-    `CONSTRAINTS\n${constraints.map((c) => `- ${c}`).join('\n')}`;
+    `${entry.productName} — ${entry.challenge}\n\n` +
+    `TASK\n${entry.task}` +
+    (entry.constraints.length
+      ? `\n\nCONSTRAINTS\n${entry.constraints.map((c) => `- ${c}`).join('\n')}`
+      : '');
 
   return {
     topic: chosenTopic,
-    level: lvl,
-    levelName: LEVEL_NAMES[lvl],
-    context: scenario.context,
-    task: scenario.task,
-    flavour: scenario.flavour,
-    constraints,
+    productName: entry.productName,
+    challenge: entry.challenge,
+    task: entry.task,
+    constraints: entry.constraints,
     text,
-    suggestedMinutes: LEVEL_MINUTES[lvl],
+    suggestedMinutes: DEFAULT_MINUTES,
   };
 }
 
@@ -201,7 +357,6 @@ function createLobby(name, mode = 'versus') {
     name: name || (solo ? 'Practice run' : `Lobby ${id}`),
     hostId: null,
     topic: 'RANDOM', // host's filter, not necessarily the rolled prompt's topic
-    level: firstPrompt.level,
     prompt: firstPrompt,
     challenge: firstPrompt.text,
     durationMinutes: firstPrompt.suggestedMinutes,
@@ -268,6 +423,7 @@ function makeParticipant(name, tool, isBot = false, playerId = null, verified = 
     connected: true,
     draft: '', // live autosaved textarea content
     code: null, // final locked submission (null until submitted/locked)
+    houseCalls: 0, // sandbox prompts spent against the shared house key this round
     submitted: false,
     dnf: false,
     autoSubmitted: false,
@@ -433,9 +589,7 @@ function snapshotFor(lobby, viewerId) {
       hostId: lobby.hostId,
       prompt: lobby.prompt,
       topic: lobby.topic,
-      level: lobby.level,
       topics: Object.keys(TOPICS),
-      levelNames: LEVEL_NAMES,
       minParticipants: MIN_PARTICIPANTS,
       maxParticipants: MAX_PARTICIPANTS,
       criteria: CRITERIA,
@@ -585,12 +739,13 @@ function resetLobby(lobby) {
   lobby.votes = new Map();
   lobby.recorded = false; // the next round is a separate row
   // A new round deserves a new brief.
-  lobby.prompt = generatePrompt(lobby.topic, lobby.level);
+  lobby.prompt = generatePrompt(lobby.topic);
   lobby.challenge = lobby.prompt.text;
   if (!lobby.minutesOverridden) lobby.durationMinutes = lobby.prompt.suggestedMinutes;
   for (const p of lobby.participants.values()) {
     p.draft = '';
     p.code = null;
+    p.houseCalls = 0;
     p.submitted = false;
     p.dnf = false;
     p.autoSubmitted = false;
@@ -899,20 +1054,17 @@ function handle(ws, msg) {
 
   switch (msg.type) {
     // -- setup -------------------------------------------------------------
-    // The host never writes the brief. They pick a topic and difficulty, and the
-    // server rolls a random challenge from that pool.
+    // The host never writes the brief. They pick a topic, and the server
+    // rolls a random challenge from that pool.
     case 'roll_prompt': {
       if (!isHost) return fail(ws, 'Only the host can roll the challenge.');
       if (lobby.phase !== 'lobby') return fail(ws, 'Too late to change the challenge.');
       if (typeof msg.topic === 'string') {
         lobby.topic = TOPICS[msg.topic] ? msg.topic : 'RANDOM';
       }
-      if (msg.level === 'RANDOM') lobby.level = null;
-      else if ([1, 2, 3, 4].includes(Number(msg.level))) lobby.level = Number(msg.level);
 
-      lobby.prompt = generatePrompt(lobby.topic, lobby.level);
+      lobby.prompt = generatePrompt(lobby.topic);
       lobby.challenge = lobby.prompt.text;
-      // Difficulty drives the clock unless the host has said otherwise.
       if (!lobby.minutesOverridden) lobby.durationMinutes = lobby.prompt.suggestedMinutes;
       broadcast(lobby);
       return;
@@ -1081,7 +1233,89 @@ app.use((_req, res, next) => {
   next();
 });
 
+// Caps body size well below HOUSE_MAX_PAYLOAD_CHARS so an oversized request is
+// rejected by Express before it reaches any of the checks below.
+app.use(express.json({ limit: '64kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Which providers this instance can front with its own key, and the room
+// left in the shared budget - lets the client know before anyone tries to
+// prompt, rather than finding out on the first failed call.
+app.get('/api/config', (_req, res) => {
+  const house = {};
+  for (const id of Object.keys(HOUSE_PROVIDERS)) house[id] = houseEnabled(id);
+  res.json({ house, houseCallsPerRound: HOUSE_CALLS_PER_ROUND });
+});
+
+/* The house-key sandbox proxy. A player's own key never touches this server -
+ * this path exists only for the shared key, so it is deliberately narrow:
+ * one active lobby, one real participant in it (proven by their resume
+ * token, the same credential 'resume' trusts), one round's worth of calls,
+ * one provider this instance actually funds. Nothing here is a general
+ * "call any model with the house key" proxy. */
+app.post('/api/sandbox/complete', async (req, res) => {
+  const { lobbyId, participantId, token, provider, messages } = req.body || {};
+
+  if (!houseGlobalBudgetOk()) {
+    return res.status(429).json({ message: 'The house key is busy right now. Try again shortly.' });
+  }
+  if (!houseEnabled(provider)) {
+    return res.status(400).json({ message: 'This instance has no house key for that provider.' });
+  }
+  const lobby = lobbies.get(cleanText(lobbyId, 16).toUpperCase());
+  if (!lobby) return res.status(404).json({ message: 'That lobby no longer exists.' });
+  const participant = lobby.participants.get(String(participantId || ''));
+  if (!participant || !tokenMatches(participant.token, String(token || ''))) {
+    return res.status(403).json({ message: 'Not a participant in that lobby.' });
+  }
+  if (lobby.phase !== 'active') {
+    return res.status(409).json({ message: 'The house key only works during the build phase.' });
+  }
+  if (participant.houseCalls >= HOUSE_CALLS_PER_ROUND) {
+    return res.status(429).json({
+      message: `House key limit reached for this round (${HOUSE_CALLS_PER_ROUND} prompts). Connect your own key for more.`,
+    });
+  }
+  if (!Array.isArray(messages) || !messages.length) {
+    return res.status(400).json({ message: 'No prompt to send.' });
+  }
+  const lastTurn = messages[messages.length - 1];
+  if (typeof lastTurn?.content !== 'string' || lastTurn.content.length > HOUSE_MAX_PROMPT_CHARS) {
+    return res.status(400).json({ message: 'That prompt is too long for the house key.' });
+  }
+  const payloadSize = JSON.stringify(messages).length;
+  if (payloadSize > HOUSE_MAX_PAYLOAD_CHARS) {
+    return res.status(400).json({ message: 'This conversation has grown too long for the house key.' });
+  }
+
+  const spec = HOUSE_PROVIDERS[provider];
+  houseWindowCalls += 1;
+  participant.houseCalls += 1;
+  try {
+    const upstream = await fetch(spec.url(spec.key, spec.model), {
+      method: 'POST',
+      headers: spec.headers(spec.key),
+      body: JSON.stringify(spec.body(spec.model, messages)),
+    });
+    if (!upstream.ok) {
+      // The detail can carry the operator's own account info (billing, org
+      // id), so it stays in the server log - players get a flat message.
+      const detail = await upstream.text().catch(() => '');
+      console.error(`house key (${provider}) returned ${upstream.status}:`, detail.slice(0, 500));
+      const message =
+        upstream.status === 429
+          ? 'The provider rate-limited the house key. Try again shortly.'
+          : 'The house key request failed upstream.';
+      return res.status(502).json({ message });
+    }
+    const json = await upstream.json();
+    res.json({ text: spec.text(json), usage: spec.usage(json) });
+  } catch (err) {
+    console.error('house key request error', err);
+    res.status(502).json({ message: 'Could not reach the provider.' });
+  }
+});
+
 app.get('/api/lobbies', (_req, res) => {
   res.json(
     [...lobbies.values()]
@@ -1098,7 +1332,6 @@ app.get('/api/lobbies', (_req, res) => {
         spectators: l.spectators.size,
         round: l.round,
         topic: l.prompt ? l.prompt.topic : null,
-        levelName: l.prompt ? l.prompt.levelName : null,
         task: l.prompt ? l.prompt.task : null,
         endsAt: l.phase === 'active' ? l.endsAt : null,
         serverNow: Date.now(),

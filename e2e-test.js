@@ -104,10 +104,10 @@ async function main() {
   // -- 3. generated challenge + timed start --------------------------------
   let e;
   const p0 = alice.state.lobby.prompt;
-  check('lobby is created with a rolled prompt', !!p0 && !!p0.context && !!p0.task, p0 && p0.context);
-  check('prompt carries constraints', Array.isArray(p0.constraints) && p0.constraints.length > 0);
+  check('lobby is created with a rolled prompt', !!p0 && !!p0.productName && !!p0.task, p0 && p0.productName);
+  check('prompt carries a constraints array', Array.isArray(p0.constraints));
   check('prompt reaches guests too', !!dave.state.lobby.prompt.task);
-  check('timer defaults to the difficulty', alice.state.lobby.durationMinutes === p0.suggestedMinutes);
+  check('timer defaults to the pool default', alice.state.lobby.durationMinutes === p0.suggestedMinutes);
 
   bob.send({ type: 'roll_prompt', topic: 'CHAOS' });
   e = await bob.nextError();
@@ -116,18 +116,12 @@ async function main() {
   // Rolling within one topic must stay in that topic.
   const seen = new Set();
   for (let i = 0; i < 8; i++) {
-    alice.send({ type: 'roll_prompt', topic: 'GAMES', level: 3 });
+    alice.send({ type: 'roll_prompt', topic: 'GAMES' });
     await sleep(40);
-    seen.add(alice.state.lobby.prompt.context);
+    seen.add(alice.state.lobby.prompt.productName);
   }
   check('topic filter is respected', alice.state.lobby.prompt.topic === 'GAMES');
-  check('difficulty filter is respected', alice.state.lobby.prompt.level === 3);
   check('rolling actually varies the brief', seen.size > 1, `${seen.size} distinct briefs in 8 rolls`);
-  check(
-    'level 3 applies two constraints',
-    alice.state.lobby.prompt.constraints.length === 2,
-    String(alice.state.lobby.prompt.constraints.length)
-  );
   check(
     'challenge text mirrors the structured prompt',
     alice.state.lobby.challenge.includes(alice.state.lobby.prompt.task)
@@ -136,7 +130,7 @@ async function main() {
   alice.send({ type: 'set_minutes', minutes: 0.1 });
   await alice.waitFor((c) => c.state.lobby.durationMinutes === 0.1);
   check('host can override the timer', alice.state.lobby.durationMinutes === 0.1);
-  alice.send({ type: 'roll_prompt', topic: 'SPEED' });
+  alice.send({ type: 'roll_prompt', topic: 'EASY' });
   await sleep(80);
   check('an overridden timer survives a reroll', alice.state.lobby.durationMinutes === 0.1);
 

@@ -31,7 +31,8 @@
     "db": "supabase db push",
     "test:security": "node security-test.js",
     "test:modes": "node modes-test.js",
-    "test:all": "npm test && npm run test:security && npm run test:modes"
+    "test:all": "npm test && npm run test:security && npm run test:modes && npm run test:house",
+    "test:house": "node house-key-test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.1",

@@ -85,11 +85,14 @@ function takeSnapshot(lobby, leaderboard) {
     lobby_name: lobby.name,
     round: lobby.round,
     topic: p.topic || 'UNKNOWN',
-    level: p.level || 0,
-    level_name: p.levelName || null,
-    context: p.context || '',
+    // The difficulty axis is gone: `level` stays 0 to satisfy the existing
+    // not-null column, and `level_name`/`context` are repurposed to carry
+    // the per-prompt challenge label and product name instead.
+    level: 0,
+    level_name: p.challenge || null,
+    context: p.productName || '',
     task: p.task || '',
-    vibe: p.flavour || null,
+    vibe: null,
     constraints: p.constraints || [],
     duration_min: lobby.durationMinutes,
     player_count: lobby.participants.size,

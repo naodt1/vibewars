@@ -395,11 +395,28 @@ const CHAT = {
   },
 };
 
+/* Which providers this instance funds with its own key, so the sandbox works
+ * for players who never connect one. Loaded once at boot; defaults to "none"
+ * until it resolves, which just means the sandbox looks key-less for the
+ * first instant rather than erroring. */
+let houseConfig = { house: {}, houseCallsPerRound: 6 };
+fetch('/api/config')
+  .then((r) => r.json())
+  .then((cfg) => {
+    houseConfig = cfg;
+    // The fetch can land after the player is already looking at the key step
+    // or the sandbox, so repaint whichever of those is on screen.
+    if (wizFlow) renderWizard();
+    if (state && !state.spectating) renderSandboxControls();
+  })
+  .catch(() => {}); // no house key info: everyone just needs their own key, as before
+
 const sandbox = {
   messages: [], // the running conversation, system prompt included
   tokensIn: 0,
   tokensOut: 0,
   requests: 0,
+  houseUsed: 0, // house-key calls spent this round, for the remaining-count display
   busy: false,
   locked: false,
   controller: null,
@@ -413,10 +430,9 @@ function sandboxSystemPrompt(lobby) {
     'Return ONE self-contained HTML file and nothing else: no explanation, no commentary.',
     'Inline all CSS and JavaScript. No frameworks, no build step, no external requests.',
     '',
-    'CONTEXT: ' + (p.context || ''),
+    'PRODUCT: ' + (p.productName || ''),
     'TASK: ' + (p.task || ''),
   ];
-  if (p.flavour) lines.push('VIBE: ' + p.flavour);
   if ((p.constraints || []).length) {
     lines.push('CONSTRAINTS:\n- ' + p.constraints.join('\n- '));
   }
@@ -465,6 +481,36 @@ async function callModel(providerId, modelId, messages, signal) {
 
   const json = await res.json();
   return { text: spec.text(json), usage: spec.usage(json) };
+}
+
+/** The house-key path: server holds the key, we only send the conversation
+ *  and prove who we are with the same resume token 'resume' trusts. No key
+ *  is ever in this request, because we never had one to begin with. Reads
+ *  the token from the in-memory `myToken` (set on 'joined') rather than
+ *  sessionStorage, so an in-flight round keeps working off the identity the
+ *  rest of the app is already trusting, even if storage were ever cleared
+ *  or inaccessible for reasons unrelated to this session. */
+async function callModelViaHouse(providerId, messages, signal) {
+  const res = await fetch('/api/sandbox/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      lobbyId: state.lobby.id,
+      participantId: me,
+      token: myToken,
+      provider: providerId,
+      messages,
+    }),
+    signal,
+  });
+  let json = null;
+  try {
+    json = await res.json();
+  } catch (e) {
+    /* error body was not JSON */
+  }
+  if (!res.ok) throw new Error((json && json.message) || 'House key request failed.');
+  return json;
 }
 
 function renderUsage() {
@@ -527,9 +573,17 @@ async function sendPrompt() {
   if (!text) return;
 
   const mine = myParticipant();
-  const provider = providerOfModel(mine && mine.tool);
-  const modelId = modelIdFor(mine && mine.tool);
-  if (!provider || !modelId) {
+  const tool = mine && mine.tool;
+  // Your own key first if it is verified for this exact pick; otherwise fall
+  // back to the house key for whichever provider the pick actually belongs
+  // to, verified or not - the house key doesn't need a real model id, since
+  // the server supplies its own configured model.
+  const byokProvider = providerOfModel(tool);
+  const modelId = byokProvider ? modelIdFor(tool) : null;
+  const byokReady = !!byokProvider && !!modelId;
+  const anyProvider = providerForTool(tool);
+  const houseProvider = !byokReady && anyProvider && houseConfig.house[anyProvider] ? anyProvider : null;
+  if (!byokReady && !houseProvider) {
     showError('Connect a key for this model on the API keys page to use the sandbox.');
     return;
   }
@@ -545,8 +599,16 @@ async function sendPrompt() {
   renderSandboxControls();
 
   sandbox.controller = new AbortController();
+  // The server spends one of the round's house calls the moment it attempts
+  // the upstream request, regardless of whether that request succeeds - a
+  // rejected or timed-out call still cost it the attempt. Counting here,
+  // before the await, keeps the displayed remaining count truthful instead
+  // of only ever counting the happy path.
+  if (houseProvider) sandbox.houseUsed += 1;
   try {
-    const out = await callModel(provider, modelId, sandbox.messages, sandbox.controller.signal);
+    const out = byokReady
+      ? await callModel(byokProvider, modelId, sandbox.messages, sandbox.controller.signal)
+      : await callModelViaHouse(houseProvider, sandbox.messages, sandbox.controller.signal);
     sandbox.tokensIn += out.usage.in;
     sandbox.tokensOut += out.usage.out;
     sandbox.requests += 1;
@@ -590,6 +652,7 @@ function resetSandbox() {
   sandbox.tokensIn = 0;
   sandbox.tokensOut = 0;
   sandbox.requests = 0;
+  sandbox.houseUsed = 0; // the server's own cap resets per round too - see resetLobby
   sandbox.busy = false;
   sandbox.locked = false;
   sandbox.controller = null;
@@ -600,23 +663,39 @@ function resetSandbox() {
 function renderSandboxControls() {
   const mine = myParticipant();
   const done = sandbox.locked || !!(mine && mine.submitted);
-  const connected = !!providerOfModel(mine && mine.tool);
+  const tool = mine && mine.tool;
+  const byokProvider = providerOfModel(tool);
+  const byokReady = !!byokProvider && !!modelIdFor(tool);
+  const anyProvider = providerForTool(tool);
+  const houseProvider = !byokReady && anyProvider && houseConfig.house[anyProvider] ? anyProvider : null;
+  const ready = byokReady || !!houseProvider;
 
-  $('promptInput').disabled = done || !connected;
-  $('sendPrompt').disabled = done || sandbox.busy || !connected;
+  $('promptInput').disabled = done || !ready;
+  $('sendPrompt').disabled = done || sandbox.busy || !ready;
   $('sendPrompt').textContent = sandbox.busy ? 'Working' : 'Send';
 
   const note = $('sandboxNote');
-  if (done) note.textContent = 'Locked. Nothing more goes out.';
-  else if (!connected) {
+  if (done) {
+    note.textContent = 'Locked. Nothing more goes out.';
+  } else if (byokReady) {
+    note.textContent = 'Your key, your call. Prompts go straight to the provider.';
+  } else if (houseProvider) {
+    const left = Math.max(0, houseConfig.houseCallsPerRound - sandbox.houseUsed);
+    note.innerHTML =
+      'Using the house key for <strong>' + esc(PROVIDERS[houseProvider].label) + '</strong>. ' +
+      left + ' of ' + houseConfig.houseCallsPerRound + ' prompts left this round. ' +
+      '<button type="button" class="link-btn" data-open-keys>Bring your own key</button> for more.';
+    const link = note.querySelector('[data-open-keys]');
+    if (link) link.onclick = () => openPage('keys');
+  } else {
     note.innerHTML =
       'No key connected for <strong>' +
-      esc((mine && mine.tool) || 'your model') +
+      esc(tool || 'your model') +
       '</strong>. Paste HTML into the editor instead, or <button type="button" class="link-btn" ' +
       'data-open-keys>connect a key</button>.';
     const link = note.querySelector('[data-open-keys]');
     if (link) link.onclick = () => openPage('keys');
-  } else note.textContent = 'Your key, your call. Prompts go straight to the provider.';
+  }
 }
 
 /* --------------------------------------------------------------- BYOK -- *
@@ -769,7 +848,14 @@ function modelIdFor(label) {
 }
 
 /* Fallback catalogue, used for providers with no key attached. Edit freely -
-   these are declared, not verified, and are only labels on a tile. */
+   these are declared, not verified, and are only labels on a tile.
+   Deliberately limited to the four providers this app can actually call
+   (see PROVIDERS above): every group here has a real completions API behind
+   it, so connecting a key always turns a declared pick into a working one.
+   Coding agents/IDEs and open-weight/local models were dropped - nothing in
+   the sandbox could ever call them, so listing them just set up a dead end
+   where "no key needed" became the only option. Anyone actually using one of
+   those can still type it into "Something else" and paste HTML by hand. */
 const TOOL_GROUPS = [
   {
     name: 'ChatGPT / OpenAI',
@@ -786,30 +872,6 @@ const TOOL_GROUPS = [
   {
     name: 'Grok / xAI',
     models: ['Grok 4.5', 'Grok 4', 'Grok 4 Fast'],
-  },
-  {
-    name: 'Meta',
-    models: ['Muse Spark 1.1', 'Llama 4 Scout', 'Llama 4 Maverick'],
-  },
-  {
-    name: 'Open weights',
-    models: ['DeepSeek V3', 'DeepSeek R1', 'Qwen3 Max', 'Mistral Large', 'Kimi K2', 'GLM-4.6'],
-  },
-  {
-    name: 'Coding agents / IDEs',
-    models: [
-      'Claude Code',
-      'Codex CLI',
-      'Cursor',
-      'GitHub Copilot',
-      'Windsurf',
-      'Cline',
-      'Zed',
-      'v0',
-      'Lovable',
-      'Bolt',
-      'Replit Agent',
-    ],
   },
 ];
 
@@ -981,6 +1043,7 @@ function registerPicker(mountId, hiddenInputId) {
 let ws = null;
 let state = null; // last snapshot from server
 let me = null; // my participant id
+let myToken = null; // my resume token, cached in memory alongside `me` - see 'joined' below
 let clockOffset = 0; // serverNow - clientNow
 let countdownTimer = null;
 let revealBuiltFor = null; // phase key the grid was built for
@@ -1015,6 +1078,7 @@ function onMessage(msg) {
     showError(msg.message);
     if (/lobby no longer exists|Session not found/i.test(msg.message)) {
       sessionStorage.removeItem('vibewars');
+      myToken = null;
       show('entry');
     }
     return;
@@ -1023,6 +1087,7 @@ function onMessage(msg) {
     // Watching is not a seat, so nothing goes into sessionStorage: a reload
     // drops you back to the match list rather than resuming a phantom player.
     me = null;
+    myToken = null;
     showError('');
     return;
   }
@@ -1036,6 +1101,7 @@ function onMessage(msg) {
   }
   if (msg.type === 'joined') {
     me = msg.participantId;
+    myToken = msg.token;
     sessionStorage.setItem(
       'vibewars',
       JSON.stringify({ lobbyId: msg.lobbyId, token: msg.token })
@@ -1047,6 +1113,7 @@ function onMessage(msg) {
     sessionStorage.removeItem('vibewars');
     state = null;
     me = null;
+    myToken = null;
     revealBuiltFor = null;
     clearInterval(countdownTimer);
     $('codeInput').value = '';
@@ -1059,11 +1126,6 @@ function onMessage(msg) {
     document.title = 'vibewars - multiplayer vibe coding battles';
     $('winnerBanner').innerHTML = '';
     showChoice(); // back to the create/join fork, not a half-filled form
-    $('navPhase').hidden = true;
-    // Leaving a lobby drops the participant, not the identity - the chip goes
-    // back to your stored nickname, not to a placeholder.
-    $('navWho').textContent = identity.nickname;
-    $('leaveBtn').style.display = 'none';
     showError('');
     show('entry');
     loadLobbies();
@@ -1094,6 +1156,41 @@ function show(sectionId) {
   for (const s of document.querySelectorAll('section')) {
     s.classList.toggle('visible', s.id === sectionId);
   }
+  syncNavChrome();
+}
+
+/* On the landing screen the navbar wordmark just repeats the giant title
+ * directly beneath it, and the bar's rule cuts the hero in half. So the bar
+ * goes bare there - no wordmark, no dividing line - and comes back in full
+ * on every other screen, where there is no title to stand in for it. */
+function syncNavChrome() {
+  const landing =
+    $('entry').classList.contains('visible') && !$('entryChoice').hidden;
+  document.body.classList.toggle('bare-nav', landing);
+}
+
+/* The one "back" control in the app. Every screen that has somewhere to
+ * return to calls this with what that means here; screens with nothing to
+ * return to (the main menu) call it with no label and the button disappears.
+ * The slot itself never moves - only the label and the handler do. */
+function setPageBack(label, action) {
+  if (!label) {
+    $('pageBack').hidden = true;
+    $('globalBack').onclick = null;
+    return;
+  }
+  $('pageBack').hidden = false;
+  $('globalBackLabel').textContent = label;
+  $('globalBack').onclick = action;
+}
+
+/** Leaving mid-battle costs real players their fourth, so confirm it; leaving
+ *  a lobby that has not started yet, or a solo run nobody else is in, does
+ *  not need the interruption. */
+function leaveCurrent() {
+  const live = state && state.lobby.phase !== 'lobby' && state.lobby.mode !== 'solo';
+  if (live && !confirm('Leave this battle?')) return;
+  sendMsg({ type: 'leave' });
 }
 
 function myParticipant() {
@@ -1107,7 +1204,10 @@ function render() {
   const { lobby, participants } = state;
   const mine = myParticipant();
   const isHost = lobby.hostId === me;
-  renderNav(lobby, mine);
+  setPageBack(
+    lobby.mode === 'solo' ? (lobby.phase === 'practice' ? 'Back to menu' : 'Leave') : 'Leave lobby',
+    leaveCurrent
+  );
 
   // Only animate when the phase actually turns over, not on every broadcast.
   const phaseChanged = lastRenderedPhase !== lobby.phase;
@@ -1246,18 +1346,18 @@ function renderPromptCard(el, lobby) {
     '<span class="prompt-tag">Challenge</span>' +
     '<div class="prompt-meta">' +
     `<span class="chip chip-secondary">${esc(p.topic)}</span>` +
-    `<span class="chip chip-muted">Lvl ${p.level} - ${esc(p.levelName)}</span>` +
+    `<span class="chip chip-muted">${esc(p.challenge)}</span>` +
     `<span class="chip">${lobby.durationMinutes} min</span>` +
     '</div>' +
-    '<span class="prompt-label">Context</span>' +
-    `<p class="prompt-context">${esc(p.context)}</p>` +
+    `<p class="prompt-context"><strong>${esc(p.productName)}</strong></p>` +
     '<div class="prompt-task"><span class="prompt-label">Task</span>' +
     `<div class="prompt-task-text">${esc(p.task)}</div></div>` +
-    `<p class="prompt-vibe"><strong>Vibe:</strong> ${esc(p.flavour)}</p>` +
-    '<span class="prompt-label">Constraints</span>' +
-    `<ul class="prompt-constraints">${p.constraints
-      .map((c) => `<li>${esc(c)}</li>`)
-      .join('')}</ul>`;
+    (p.constraints.length
+      ? '<span class="prompt-label">Constraints</span>' +
+        `<ul class="prompt-constraints">${p.constraints
+          .map((c) => `<li>${esc(c)}</li>`)
+          .join('')}</ul>`
+      : '');
 
   // Announce a reroll, but do not re-animate on every unrelated broadcast.
   if (p.task !== lastPromptTask) {
@@ -1275,37 +1375,8 @@ function syncPromptControls(lobby) {
     topicSel.innerHTML =
       '<option value="RANDOM">Any topic</option>' +
       lobby.topics.map((t) => `<option value="${t}">${esc(t)}</option>`).join('');
-    $('levelSelect').innerHTML =
-      '<option value="RANDOM">Any difficulty</option>' +
-      [1, 2, 3, 4]
-        .map((l) => `<option value="${l}">Lvl ${l} - ${esc(lobby.levelNames[l])}</option>`)
-        .join('');
   }
   if (document.activeElement !== topicSel) topicSel.value = lobby.topic || 'RANDOM';
-  if (document.activeElement !== $('levelSelect')) {
-    $('levelSelect').value = lobby.level ? String(lobby.level) : 'RANDOM';
-  }
-}
-
-function renderNav(lobby, mine) {
-  const phase = state.spectating
-    ? 'Watching'
-    : {
-        lobby: lobby.mode === 'solo' ? 'Practice' : 'In the lobby',
-        active: lobby.mode === 'solo' ? 'Practising' : 'Battle live',
-        reveal: 'Judging',
-        results: 'Results',
-        practice: 'Practice done',
-      }[lobby.phase];
-  // "Not in a lobby" tells you nothing you cannot already see, so the chip only
-  // appears once you are actually in one.
-  $('navPhase').hidden = false;
-  $('navPhase').textContent = phase;
-  $('navPhase').className = 'chip ' + (lobby.phase === 'active' ? 'chip-accent' : 'chip-ink');
-  // Just the name: the tool is already on your roster row and tile, and the
-  // pair together was wide enough to wrap the navbar onto two lines.
-  $('navWho').textContent = mine ? mine.name : identity.nickname;
-  $('leaveBtn').style.display = mine ? 'inline-flex' : 'none';
 }
 
 // --- build phase ---
@@ -1619,7 +1690,7 @@ function renderPractice(lobby, mine) {
 function renderSpectate() {
   const { lobby, participants } = state;
   show('spectate');
-  renderNav(lobby, null);
+  setPageBack('Stop watching', () => sendMsg({ type: 'stop_spectate' }));
 
   const watching = state.spectators || 0;
   $('spectateTitle').innerHTML =
@@ -1866,13 +1937,15 @@ function renderIdentity() {
     const input = $(id);
     if (input && document.activeElement !== input) input.value = identity.nickname;
   }
-  if (!state) $('navWho').textContent = identity.nickname;
 }
 
 /* ---------------------------------------------------------- info pages -- *
- * Rules, scoring and about live in a sheet rather than separate routes, so
- * reading them never disturbs a battle in progress. The hash keeps them
- * linkable, which matters once this is public. */
+ * Rules, scoring, keys, sponsor and about are real pages like everything
+ * else in the app, not an overlay - opening one takes over the screen, and
+ * the unified back control returns to wherever it was opened from, including
+ * a battle in progress (which keeps running the whole time; see
+ * rememberView() below). The hash keeps them linkable, which matters once
+ * this is public. */
 
 /* ------------------------------------------------------- how to play -- *
  * A walkthrough rather than a wall of text: one idea per screen, Next and Back,
@@ -1885,8 +1958,8 @@ const GUIDE_STEPS = [
     title: 'One brief, dealt to everyone',
     body:
       'A lobby holds four to six players. Inside it you play battles - one round each. Nobody ' +
-      'writes the brief: the host picks a topic and a difficulty and the server deals a context, a ' +
-      'task, a vibe and some deliberately annoying constraints.',
+      'writes the brief: the host picks a topic and the server deals a product, a task, and ' +
+      'usually one deliberately annoying constraint.',
     art: `<rect x="14" y="18" width="92" height="64" rx="8" class="g-surface"/>
           <rect x="26" y="32" width="46" height="7" rx="3.5" class="g-accent"/>
           <rect x="26" y="46" width="68" height="6" rx="3" class="g-line"/>
@@ -2038,7 +2111,7 @@ async function renderGlobalBoard() {
   }
   if (!data || !data.enabled || !data.tools || !data.tools.length) {
     host.innerHTML =
-      '<p class="muted">Nothing on the board yet. Win a battle and put your model here.</p>';
+      '<p class="muted">&#127942; Nothing on the board yet. Win a battle and put your model here.</p>';
     return;
   }
   host.innerHTML =
@@ -2077,6 +2150,9 @@ function renderKeyList() {
         (connected
           ? `<span class="chip chip-accent">Connected</span>`
           : `<span class="chip chip-quiet">Not connected</span>`) +
+        (!connected && houseConfig.house[id]
+          ? `<span class="chip chip-quiet">House key available</span>`
+          : '') +
         '</div>' +
         `<p class="key-hint">${esc(p.hint)}</p>` +
         (connected
@@ -2133,36 +2209,83 @@ function renderKeyList() {
   });
 }
 
+/* Info pages are a real section like everything else, not an overlay - which
+ * means something has to remember what was on screen before one opened, so
+ * Back can put it back: the exact wizard step with its fields still filled,
+ * the watch list, or a battle in progress that kept running the whole time.
+ * Captured as a closure rather than a snapshot, because replaying "call the
+ * function that built this screen" is simpler than reconstructing DOM state
+ * by hand, and every one of those functions already sets up its own
+ * pageBack label as a side effect. */
+let returnToView = null;
+let onInfoPage = false;
+
+function rememberView() {
+  if (state) {
+    // The game kept running underneath - state is still live, so redrawing
+    // it is exactly what the next server broadcast would have done anyway.
+    returnToView = () => (state.spectating ? renderSpectate() : render());
+    return;
+  }
+  const section = document.querySelector('section.visible')?.id;
+  // show('infoPage') un-marks every other section, .entry included, so every
+  // path back through the entry section has to re-mark it - showChoice/
+  // showPlay/startFlow only toggle their own sub-divs and otherwise assume
+  // the section is already on screen, because until now every caller that
+  // reaches them was already inside #entry.
+  if (section === 'watch') {
+    returnToView = showWatch;
+  } else if (section === 'entry' && !$('entryWizard').hidden) {
+    // wizFlow/wizIndex persist while the info page is open, and the wizard's
+    // own inputs are only hidden, not destroyed - re-running startFlow with
+    // the same values redraws the exact step the player was on.
+    const flow = wizFlow, index = wizIndex;
+    returnToView = () => { show('entry'); startFlow(flow, index); };
+  } else if (section === 'entry' && !$('playScreen').hidden) {
+    returnToView = () => { show('entry'); showPlay(); };
+  } else if (section === 'entry' && !$('multiplayerScreen').hidden) {
+    returnToView = () => { show('entry'); showMultiplayer(); };
+  } else {
+    returnToView = () => { show('entry'); showChoice(); };
+  }
+}
+
 function openPage(key) {
   const page = PAGES[key];
   if (!page) return;
-  $('sheetTitle').textContent = page.title;
-  $('sheetBody').innerHTML = '';
-  $('sheetBody').appendChild($(page.template).content.cloneNode(true));
+  if (!onInfoPage) rememberView(); // switching between info pages keeps the original return point
+  onInfoPage = true;
+  $('infoPageTitle').textContent = page.title;
+  $('infoPageBody').innerHTML = '';
+  $('infoPageBody').appendChild($(page.template).content.cloneNode(true));
   if (page.onOpen) page.onOpen();
-  $('sheet').hidden = false;
-  $('sheet').querySelector('[data-close-sheet].btn').focus();
+  show('infoPage');
+  // "Back" rather than a screen-specific label: whatever it returns to (a
+  // live battle, the watch list, the menu) will set its own correct label
+  // the moment it renders.
+  setPageBack(state ? 'Back' : 'Menu', closePage);
   if (location.hash !== '#' + key) history.pushState(null, '', '#' + key);
 }
 
 function closePage() {
-  $('sheet').hidden = true;
+  onInfoPage = false;
+  const restore = returnToView;
+  returnToView = null;
+  if (restore) restore();
+  else { show('entry'); showChoice(); } // rememberView() never ran - fall back to the root
   if (location.hash) history.pushState(null, '', location.pathname);
 }
 
 document.querySelectorAll('[data-page]').forEach((el) => {
   el.onclick = () => openPage(el.dataset.page);
 });
-document.querySelectorAll('[data-close-sheet]').forEach((el) => {
-  el.onclick = closePage;
-});
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !$('sheet').hidden) closePage();
+  if (e.key === 'Escape' && document.querySelector('section.visible')?.id === 'infoPage') closePage();
 });
 window.addEventListener('popstate', () => {
   const key = location.hash.slice(1);
   if (PAGES[key]) openPage(key);
-  else $('sheet').hidden = true;
+  else if (document.querySelector('section.visible')?.id === 'infoPage') closePage();
 });
 // A cold load of /#scoring should land on that page, not just the front screen.
 if (PAGES[location.hash.slice(1)]) openPage(location.hash.slice(1));
@@ -2264,15 +2387,31 @@ function showChoice() {
   $('playScreen').hidden = true;
   $('entryChoice').hidden = false;
   showError('');
+  syncNavChrome();
+  setPageBack(null, null); // the main menu is the root - nowhere further back
 }
 
 function showPlay() {
   wizFlow = null;
   $('entryWizard').hidden = true;
   $('entryChoice').hidden = true;
+  $('multiplayerScreen').hidden = true;
   $('playScreen').hidden = false;
   showError('');
+  syncNavChrome();
+  setPageBack('Menu', showChoice);
+}
+
+function showMultiplayer() {
+  wizFlow = null;
+  $('entryWizard').hidden = true;
+  $('entryChoice').hidden = true;
+  $('playScreen').hidden = true;
+  $('multiplayerScreen').hidden = false;
+  showError('');
+  syncNavChrome();
   loadLobbies();
+  setPageBack('Menu', showPlay);
 }
 
 function startFlow(flow, atIndex = 0) {
@@ -2280,9 +2419,15 @@ function startFlow(flow, atIndex = 0) {
   wizIndex = atIndex;
   $('entryChoice').hidden = true;
   $('playScreen').hidden = true;
+  $('multiplayerScreen').hidden = true;
   $('entryWizard').hidden = false;
   showError('');
+  syncNavChrome();
   renderWizard();
+  // Solo is opened from the play fork, so backing out of it lands there;
+  // create/join are opened from the multiplayer screen, so backing out
+  // lands there.
+  setPageBack('Menu', flow === 'solo' ? showPlay : showMultiplayer);
 }
 
 function renderWizard() {
@@ -2369,7 +2514,14 @@ function renderKeyStep(flow) {
     return true;
   }
 
+  const houseNote = houseConfig.house[provider]
+    ? '<p class="key-step-note">This one is already covered: skip this and the sandbox still works, ' +
+      'using the house key on this instance for a shared, capped number of prompts per round. ' +
+      'Connect your own for no cap.</p>'
+    : '';
+
   host.innerHTML =
+    houseNote +
     '<p class="key-step-note">Paste a <strong>' + esc(label) + '</strong> key and we will ask ' +
     'that provider what you can reach. It stays in this browser and goes nowhere else.</p>' +
     '<p class="key-hint">' + esc(PROVIDERS[provider].hint) + '</p>' +
@@ -2447,7 +2599,7 @@ function wizAdvance() {
 }
 
 function wizRetreat() {
-  if (wizIndex === 0) showPlay();
+  if (wizIndex === 0) (wizFlow === 'solo' ? showPlay : showMultiplayer)();
   else {
     wizIndex--;
     renderWizard();
@@ -2473,21 +2625,11 @@ document.querySelectorAll('.tab').forEach((tab) => {
 });
 
 $('menuPlay').onclick = showPlay;
-$('menuSolo').onclick = () => {
-  show('entry');
-  startFlow('solo');
-};
 $('menuWatch').onclick = showWatch;
-$('watchBack').onclick = () => {
-  clearInterval(matchPoll);
-  matchPoll = null;
-  show('entry');
-  showChoice();
-};
 $('refreshMatches').onclick = () => loadMatches(true);
-$('spectateLeave').onclick = () => sendMsg({ type: 'stop_spectate' });
-$('practiceQuit').onclick = () => sendMsg({ type: 'leave' });
 $('practiceAgain').onclick = () => sendMsg({ type: 'reset' });
+$('chooseSolo').onclick = () => startFlow('solo');
+$('chooseMultiplayer').onclick = showMultiplayer;
 $('chooseCreate').onclick = () => startFlow('create');
 $('chooseJoin').onclick = () => startFlow('join');
 
@@ -2518,11 +2660,6 @@ registerPicker('soloToolPicker', 'soloTool');
 
 $('addBotBtn').onclick = () => sendMsg({ type: 'add_bot' });
 
-$('leaveBtn').onclick = () => {
-  if (state && state.lobby.phase !== 'lobby' && !confirm('Leave this battle?')) return;
-  sendMsg({ type: 'leave' });
-};
-
 $('refreshLobbies').onclick = loadLobbies;
 
 /* ------------------------------------------------------- watch a match -- */
@@ -2535,6 +2672,12 @@ function showWatch() {
   loadMatches(true);
   clearInterval(matchPoll);
   matchPoll = setInterval(loadMatches, 4000);
+  setPageBack('Menu', () => {
+    clearInterval(matchPoll);
+    matchPoll = null;
+    show('entry');
+    showChoice();
+  });
 }
 
 async function loadMatches(force = false) {
@@ -2576,7 +2719,7 @@ async function loadMatches(force = false) {
         );
       })
       .join('') ||
-    '<li class="slot-empty">Nothing live right now. Start a battle and it shows up here.</li>';
+    '<li class="slot-empty">&#128064; Nothing live right now. Start a battle and it shows up here.</li>';
 
   $('matchList')
     .querySelectorAll('[data-watch]')
@@ -2617,7 +2760,7 @@ async function loadLobbies() {
             l.joinable ? '' : ' disabled'
           }>${l.joinable ? 'Join' : l.phase === 'lobby' ? 'Full' : 'In progress'}</button></li>`
       )
-      .join('') || '<li class="slot-empty">No lobbies open. Create one.</li>';
+      .join('') || '<li class="slot-empty">&#128273; No lobbies open. Create one.</li>';
 
   $('lobbyList')
     .querySelectorAll('[data-join-lobby]')
@@ -2641,20 +2784,14 @@ function joinFromList(lobbyId) {
 
 // Keep the open-lobbies list fresh while sitting on the entry screen.
 setInterval(() => {
-  if ($('entry').classList.contains('visible') && !$('playScreen').hidden) loadLobbies();
+  if ($('entry').classList.contains('visible') && !$('multiplayerScreen').hidden) loadLobbies();
 }, 3000);
 
-const rollPrompt = () =>
-  sendMsg({
-    type: 'roll_prompt',
-    topic: $('topicSelect').value,
-    level: $('levelSelect').value === 'RANDOM' ? 'RANDOM' : Number($('levelSelect').value),
-  });
+const rollPrompt = () => sendMsg({ type: 'roll_prompt', topic: $('topicSelect').value });
 
 $('rollBtn').onclick = rollPrompt;
-// Changing either filter immediately rolls a matching brief.
+// Changing the filter immediately rolls a matching brief.
 $('topicSelect').onchange = rollPrompt;
-$('levelSelect').onchange = rollPrompt;
 
 $('minutesInput').onchange = () =>
   sendMsg({ type: 'set_minutes', minutes: Number($('minutesInput').value) });
@@ -2724,6 +2861,9 @@ setInterval(flushDraft, 2000); // slow backstop for anything the events missed
 // ------------------------------------------------------------------- boot ---
 
 ensureIdentity();
+// The landing screen is what the markup already shows, but nothing has run
+// show()/showChoice() yet to match the chrome to it.
+syncNavChrome();
 maybeOfferGuide();
 
 connect(() => {
