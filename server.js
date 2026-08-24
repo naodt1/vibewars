@@ -296,7 +296,11 @@ function generatePrompt(topic) {
   const topicNames = Object.keys(TOPICS);
   const chosenTopic = TOPICS[topic] ? topic : pickRandom(topicNames);
   const entry = pickRandom(TOPICS[chosenTopic]);
+  return briefFrom(chosenTopic, entry);
+}
 
+/** The shared shape every brief takes, however it was chosen. */
+function briefFrom(topic, entry, special = null) {
   const text =
     `${entry.productName} — ${entry.challenge}\n\n` +
     `TASK\n${entry.task}` +
@@ -305,14 +309,81 @@ function generatePrompt(topic) {
       : '');
 
   return {
-    topic: chosenTopic,
+    topic,
     productName: entry.productName,
     challenge: entry.challenge,
     task: entry.task,
     constraints: entry.constraints,
     text,
     suggestedMinutes: DEFAULT_MINUTES,
+    // 'daily' | 'weekly' when this came from a rotating challenge, so clients
+    // can badge it and count it toward a streak. Null for an ordinary roll.
+    special,
   };
+}
+
+/* ------------------------------------------------- rotating challenges ----
+ * Everyone playing on a given day gets the same daily brief, and the same
+ * weekly one all week, with nothing persisted: the date string IS the seed.
+ * That means no cron, no storage, no drift between server restarts, and any
+ * two players can compare runs on "today's" challenge and know they had the
+ * same task. UTC throughout, so the rotation is one global moment rather
+ * than 24 staggered ones. */
+
+/** FNV-1a: tiny, deterministic, and good enough to shuffle a date into an index. */
+function hashSeed(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/** YYYY-MM-DD in UTC. */
+function utcDayKey(d = new Date()) {
+  return d.toISOString().slice(0, 10);
+}
+
+/** ISO-ish week key: YYYY-Www, rolling over on Monday UTC. */
+function utcWeekKey(d = new Date()) {
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  // Thursday of this week decides the year, which is what makes week numbers
+  // stable across a year boundary.
+  const day = (t.getUTCDay() + 6) % 7; // Monday = 0
+  t.setUTCDate(t.getUTCDate() - day + 3);
+  const firstThursday = new Date(Date.UTC(t.getUTCFullYear(), 0, 4));
+  const fDay = (firstThursday.getUTCDay() + 6) % 7;
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - fDay + 3);
+  const week = 1 + Math.round((t - firstThursday) / (7 * 24 * 3600 * 1000));
+  return `${t.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+/** When the current daily/weekly window ends, so clients can count down. */
+function challengeExpiry(kind, now = new Date()) {
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+  if (kind === 'daily') return end.getTime();
+  // Weekly runs to the next Monday 00:00 UTC.
+  const day = (now.getUTCDay() + 6) % 7; // Monday = 0
+  end.setUTCDate(end.getUTCDate() + (6 - day));
+  return end.getTime();
+}
+
+/**
+ * The brief for the current daily or weekly window. Pure function of the
+ * date: same input, same brief, on every process and every request.
+ */
+function rotatingChallenge(kind, now = new Date()) {
+  const key = kind === 'weekly' ? utcWeekKey(now) : utcDayKey(now);
+  // Salted per kind so the daily and the weekly never land on the same entry.
+  const seed = hashSeed(kind + ':' + key);
+  const topicNames = Object.keys(TOPICS);
+  const topic = topicNames[seed % topicNames.length];
+  const pool = TOPICS[topic];
+  // A second, differently-derived index so topic and entry do not move in
+  // lockstep as the seed increments day to day.
+  const entry = pool[Math.floor(seed / topicNames.length) % pool.length];
+  return { ...briefFrom(topic, entry, kind), periodKey: key, expiresAt: challengeExpiry(kind, now) };
 }
 
 // ---------------------------------------------------------------- state ----
@@ -738,8 +809,11 @@ function resetLobby(lobby) {
   lobby.endsAt = null;
   lobby.votes = new Map();
   lobby.recorded = false; // the next round is a separate row
-  // A new round deserves a new brief.
-  lobby.prompt = generatePrompt(lobby.topic);
+  // A new round deserves a new brief - unless this lobby is running a daily
+  // or weekly challenge, where the whole point is that everyone plays the
+  // same one, so "run it back" has to mean the same brief again.
+  const special = lobby.prompt && lobby.prompt.special;
+  lobby.prompt = special ? rotatingChallenge(special) : generatePrompt(lobby.topic);
   lobby.challenge = lobby.prompt.text;
   if (!lobby.minutesOverridden) lobby.durationMinutes = lobby.prompt.suggestedMinutes;
   for (const p of lobby.participants.values()) {
@@ -1059,11 +1133,18 @@ function handle(ws, msg) {
     case 'roll_prompt': {
       if (!isHost) return fail(ws, 'Only the host can roll the challenge.');
       if (lobby.phase !== 'lobby') return fail(ws, 'Too late to change the challenge.');
-      if (typeof msg.topic === 'string') {
-        lobby.topic = TOPICS[msg.topic] ? msg.topic : 'RANDOM';
-      }
 
-      lobby.prompt = generatePrompt(lobby.topic);
+      // 'daily'/'weekly' take the rotating brief instead of a fresh roll. The
+      // topic filter is left alone so backing out to a normal roll still uses
+      // whatever the host had picked.
+      if (msg.special === 'daily' || msg.special === 'weekly') {
+        lobby.prompt = rotatingChallenge(msg.special);
+      } else {
+        if (typeof msg.topic === 'string') {
+          lobby.topic = TOPICS[msg.topic] ? msg.topic : 'RANDOM';
+        }
+        lobby.prompt = generatePrompt(lobby.topic);
+      }
       lobby.challenge = lobby.prompt.text;
       if (!lobby.minutesOverridden) lobby.durationMinutes = lobby.prompt.suggestedMinutes;
       broadcast(lobby);
@@ -1245,6 +1326,16 @@ app.get('/api/config', (_req, res) => {
   const house = {};
   for (const id of Object.keys(HOUSE_PROVIDERS)) house[id] = houseEnabled(id);
   res.json({ house, houseCallsPerRound: HOUSE_CALLS_PER_ROUND });
+});
+
+/* Today's and this week's brief. Derived from the clock on every request, so
+ * there is nothing to invalidate and every client agrees. */
+app.get('/api/challenges', (_req, res) => {
+  res.json({
+    daily: rotatingChallenge('daily'),
+    weekly: rotatingChallenge('weekly'),
+    serverNow: Date.now(),
+  });
 });
 
 /* The house-key sandbox proxy. A player's own key never touches this server -

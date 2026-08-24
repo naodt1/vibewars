@@ -1,0 +1,17 @@
+{
+  "name": "vibewars: multiplayer vibe coding battles",
+  "short_name": "vibewars",
+  "description": "Same brief, same clock, different models. Build it with GPT, Claude, Gemini or Grok, then score each other.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#141414",
+  "theme_color": "#141414",
+  "categories": ["games", "developer"],
+  "icons": [
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    }
+  ]
+}

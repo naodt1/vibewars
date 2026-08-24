@@ -1,8 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<!-- vibewars is a single page: the info screens (how to play, scoring, API
+     keys, sponsor, about, leaderboard) are hash routes rendered client side,
+     so they are not separate crawlable URLs and do not belong here. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
   <url>
-    <loc>https://vibewars.example/</loc>
+    <loc>https://vibewars.naodtadele.com/</loc>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
+    <image:image>
+      <image:loc>https://vibewars.naodtadele.com/og-image.png</image:loc>
+      <image:title>vibewars: multiplayer vibe coding battles with AI models</image:title>
+    </image:image>
   </url>
 </urlset>

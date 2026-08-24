@@ -411,6 +411,35 @@ fetch('/api/config')
   })
   .catch(() => {}); // no house key info: everyone just needs their own key, as before
 
+/* Today's and this week's brief. Cached from the server so every client shows
+ * the same thing, and refreshed when a window rolls over rather than on a
+ * timer - the server hands back the exact expiry. */
+let challengeState = { daily: null, weekly: null };
+let challengeTimer = null;
+
+function loadChallenges() {
+  return fetch('/api/challenges')
+    .then((r) => r.json())
+    .then((data) => {
+      challengeState = data;
+      renderChallengeCards();
+      // Re-fetch just after the soonest window closes, so a tab left open
+      // overnight rolls to the new challenge on its own.
+      const soonest = Math.min(
+        data.daily ? data.daily.expiresAt : Infinity,
+        data.weekly ? data.weekly.expiresAt : Infinity
+      );
+      clearTimeout(challengeTimer);
+      if (Number.isFinite(soonest)) {
+        const wait = Math.max(5000, soonest - (data.serverNow || Date.now()) + 2000);
+        // setTimeout caps out around 24.8 days; nothing here comes close, but
+        // clamp anyway so a bad clock cannot schedule an instant re-fetch loop.
+        challengeTimer = setTimeout(loadChallenges, Math.min(wait, 2 ** 31 - 1));
+      }
+    })
+    .catch(() => {}); // offline: the cards just stay hidden
+}
+
 const sandbox = {
   messages: [], // the running conversation, system prompt included
   tokensIn: 0,
@@ -875,6 +904,26 @@ const TOOL_GROUPS = [
   },
 ];
 
+/** Remembered across visits so a repeat player is not stuck opening the same
+ *  provider's accordion every single time. */
+const LAST_TOOL_KEY = 'vibewars_last_tool';
+
+function lastTool() {
+  try {
+    return localStorage.getItem(LAST_TOOL_KEY) || null;
+  } catch (e) {
+    return null; // private browsing: no shortcut, the picker still works
+  }
+}
+
+function rememberTool(value) {
+  try {
+    localStorage.setItem(LAST_TOOL_KEY, value);
+  } catch (e) {
+    /* private browsing: nothing to remember it with next time */
+  }
+}
+
 /**
  * Expandable dropdown: providers collapse/expand to reveal their models, and the
  * chosen label is written into a hidden input so the rest of the app is unchanged.
@@ -932,9 +981,10 @@ function setupToolPicker(mountId, hiddenInputId) {
     hidden.value = value;
     trigger.querySelector('[data-label]').textContent = value;
     trigger.classList.remove('empty');
-    panel.querySelectorAll('.picker-model').forEach((b) => {
+    panel.querySelectorAll('.picker-model, .picker-quick-chip').forEach((b) => {
       b.classList.toggle('selected', b.dataset.value === value);
     });
+    rememberTool(value);
     closePanel();
   };
 
@@ -943,7 +993,37 @@ function setupToolPicker(mountId, hiddenInputId) {
     trigger.setAttribute('aria-expanded', 'false');
   }
 
-  for (const group of pickerGroups()) {
+  const groups = pickerGroups();
+
+  // Quick picks: whatever was chosen last time, plus one shortcut per
+  // provider, so a repeat player or a common model never needs the
+  // accordion below at all - see the screenshot that prompted this, where
+  // reaching "Claude Sonnet 5" took opening the panel and then the group.
+  const last = lastTool();
+  const quickPicks = [];
+  if (last) quickPicks.push({ value: last, isLast: true });
+  for (const group of groups) {
+    if (group.models[0] && group.models[0] !== last) {
+      quickPicks.push({ value: group.models[0] });
+    }
+  }
+  if (quickPicks.length) {
+    const quick = document.createElement('div');
+    quick.className = 'picker-quick';
+    for (const q of quickPicks) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'picker-quick-chip' + (q.isLast ? ' picker-quick-chip-last' : '');
+      chip.dataset.value = q.value;
+      chip.innerHTML =
+        (q.isLast ? '<span class="picker-quick-tag">Last time</span>' : '') + esc(q.value);
+      chip.onclick = () => setValue(q.value);
+      quick.appendChild(chip);
+    }
+    panel.appendChild(quick);
+  }
+
+  for (const group of groups) {
     const wrap = document.createElement('div');
     wrap.className = 'picker-group';
 
@@ -1102,6 +1182,12 @@ function onMessage(msg) {
   if (msg.type === 'joined') {
     me = msg.participantId;
     myToken = msg.token;
+    // Started from a challenge card: swap the lobby's random roll for the
+    // rotating brief now that we are actually in the lobby and allowed to.
+    if (pendingChallenge) {
+      sendMsg({ type: 'roll_prompt', special: pendingChallenge });
+      pendingChallenge = null;
+    }
     sessionStorage.setItem(
       'vibewars',
       JSON.stringify({ lobbyId: msg.lobbyId, token: msg.token })
@@ -1237,6 +1323,11 @@ function render() {
   } else if (lobby.phase === 'practice') {
     show('practice');
     renderPractice(lobby, mine);
+  }
+
+  // Results and practice are the two ways a round ends; both are worth XP.
+  if (lobby.phase === 'results' || lobby.phase === 'practice') {
+    recordRoundOnce(lobby, mine);
   }
 
   if (phaseChanged) {
@@ -1939,6 +2030,464 @@ function renderIdentity() {
   }
 }
 
+/* --------------------------------------------------------- progression -- *
+ * XP, badges, streaks and lifetime token usage, kept in this browser next to
+ * the anonymous identity above.
+ *
+ * Deliberately client-side. The site's whole premise is no accounts and no
+ * passwords, and progression tied to an unauthenticated playerId would be
+ * trivially forged if the server stored it - so putting it on the server
+ * would buy a leaderboard nobody could trust, at the cost of the thing that
+ * makes the game frictionless. This is a personal record of your own play,
+ * and it is honest about that. The cross-player leaderboard stays where it
+ * already is: scored battles archived to Supabase.
+ */
+
+const PROGRESS_KEY = 'vibewars_progress';
+
+const freshProgress = () => ({
+  xp: 0,
+  rounds: 0,      // rounds carried to the end
+  submits: 0,     // rounds you actually shipped something in
+  wins: 0,
+  tokensIn: 0,
+  tokensOut: 0,
+  calls: 0,
+  streak: 0,
+  bestStreak: 0,
+  lastPlayed: null,   // UTC YYYY-MM-DD of the last completed round
+  badges: [],         // ids from BADGES, in unlock order
+  providers: [],      // distinct providers played with, for the Polyglot badge
+  dailyDone: null,    // periodKey of the last daily finished, so it counts once
+  weeklyDone: null,
+  dailyCount: 0,
+});
+
+let progress = freshProgress();
+
+function loadProgress() {
+  try {
+    const raw = localStorage.getItem(PROGRESS_KEY);
+    if (!raw) return freshProgress();
+    // Merge over a fresh object so a save written by an older build is still
+    // readable after new counters are added, instead of coming back undefined.
+    return { ...freshProgress(), ...(JSON.parse(raw) || {}) };
+  } catch (e) {
+    return freshProgress(); // corrupt or unavailable storage: start clean
+  }
+}
+
+function saveProgress() {
+  try {
+    localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress));
+  } catch (e) {
+    /* private browsing: progress lasts for this session only */
+  }
+}
+
+/* Levels get steadily further apart: level n starts at 50*n*(n-1) XP, so 100,
+ * 300, 600, 1000... Early levels land fast enough to feel responsive, later
+ * ones take real play. */
+const xpForLevel = (n) => 50 * n * (n - 1);
+
+function levelFor(xp) {
+  let n = 1;
+  while (xpForLevel(n + 1) <= xp) n++;
+  return n;
+}
+
+/** Level, and how far through it you are, for the XP bar. */
+function levelInfo(xp = progress.xp) {
+  const level = levelFor(xp);
+  const base = xpForLevel(level);
+  const next = xpForLevel(level + 1);
+  return {
+    level,
+    into: xp - base,
+    span: next - base,
+    next,
+    pct: Math.max(0, Math.min(100, ((xp - base) / (next - base)) * 100)),
+  };
+}
+
+const utcDay = (d = new Date()) => d.toISOString().slice(0, 10);
+
+/** Days between two UTC day keys. */
+function daysBetween(a, b) {
+  return Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000);
+}
+
+/* Playing again the same day leaves the streak alone, the next day extends
+ * it, and any longer gap starts over at 1. */
+function touchStreak() {
+  const today = utcDay();
+  if (progress.lastPlayed === today) return;
+  const gap = progress.lastPlayed ? daysBetween(progress.lastPlayed, today) : null;
+  progress.streak = gap === 1 ? progress.streak + 1 : 1;
+  progress.lastPlayed = today;
+  if (progress.streak > progress.bestStreak) progress.bestStreak = progress.streak;
+}
+
+/* --------------------------------------------------------------- badges -- *
+ * Art is authored inline SVG rather than stock imagery: it inherits the theme
+ * through the same fill-matching the hero and choice art already use, costs
+ * no network request, and cannot rot behind someone else's licence. */
+
+/* Four tiers, so the wall reads at a glance: what is common, what is hard,
+ * and what almost nobody has. Colour comes from the gradients defined once
+ * in the page rather than per badge. */
+const BADGES = [
+  { id: 'first-build', name: 'First Build', tier: 'common', hint: 'Finish your first round.',
+    glyph: '<path d="M21 33l7 7 15-17" class="g-stroke"/>' },
+  { id: 'shipper', name: 'Shipper', tier: 'common', hint: 'Submit something in 10 rounds.',
+    glyph: '<path d="M46 19L18 30l11 4 4 11z" class="g-fill"/><path d="M29 34l17-15" class="g-stroke"/>' },
+  { id: 'streak-3', name: 'Warming Up', tier: 'common', hint: 'Play 3 days running.',
+    glyph: '<path d="M32 17c6 7 10 11 10 17a10 10 0 01-20 0c0-4 3-7 6-11 1 3 3 4 4 2 1-3 0-6 0-8z" class="g-fill"/>' },
+  { id: 'minimalist', name: 'Minimalist', tier: 'rare', hint: 'Submit a build using two prompts or fewer.',
+    glyph: '<circle cx="32" cy="32" r="14" class="g-stroke"/><path d="M24 32h16" class="g-stroke"/>' },
+  { id: 'veteran', name: 'Veteran', tier: 'rare', hint: 'Play 25 rounds.',
+    glyph: '<path d="M32 17l4.6 9.9 10.4.9-7.9 7.1 2.4 10.6L32 39.9l-9.5 5.6 2.4-10.6-7.9-7.1 10.4-.9z" class="g-fill"/>' },
+  { id: 'champion', name: 'Champion', tier: 'rare', hint: 'Win a battle.',
+    glyph: '<path d="M24 18h16v10a8 8 0 01-16 0z" class="g-fill"/><path d="M32 36v6M26 45h12" class="g-stroke"/><path d="M24 21h-4a5 5 0 005 5M40 21h4a5 5 0 01-5 5" class="g-stroke"/>' },
+  { id: 'streak-7', name: 'Week Streak', tier: 'rare', hint: 'Play 7 days running.',
+    glyph: '<path d="M32 15c7 8 12 13 12 20a12 12 0 01-24 0c0-5 4-9 7-13 1 4 4 5 5 2 1-3 0-7 0-9z" class="g-fill"/><path d="M32 41a6 6 0 006-6" class="g-stroke"/>' },
+  { id: 'daily-10', name: 'Daily Regular', tier: 'rare', hint: 'Finish 10 daily challenges.',
+    glyph: '<rect x="19" y="21" width="26" height="24" rx="4" class="g-stroke"/><path d="M19 29h26M26 17v6M38 17v6" class="g-stroke"/><path d="M27 36l4 4 7-8" class="g-stroke"/>' },
+  { id: 'level-5', name: 'Seasoned', tier: 'rare', hint: 'Reach level 5.',
+    glyph: '<path d="M20 34l12-11 12 11" class="g-stroke"/><path d="M20 44l12-11 12 11" class="g-stroke"/>' },
+  { id: 'polyglot', name: 'Polyglot', tier: 'epic', hint: 'Build with all four providers.',
+    glyph: '<circle cx="24" cy="24" r="6.5" class="g-fill"/><circle cx="40" cy="24" r="6.5" class="g-stroke"/><circle cx="24" cy="40" r="6.5" class="g-stroke"/><circle cx="40" cy="40" r="6.5" class="g-fill"/>' },
+  { id: 'dynasty', name: 'Dynasty', tier: 'epic', hint: 'Win 5 battles.',
+    glyph: '<path d="M19 40l-3-17 8 6 8-12 8 12 8-6-3 17z" class="g-fill"/><path d="M19 44h26" class="g-stroke"/>' },
+  { id: 'token-burner', name: 'Token Burner', tier: 'epic', hint: 'Spend 100,000 tokens.',
+    glyph: '<path d="M34 15L21 35h9l-3 14 16-21h-9z" class="g-fill"/>' },
+  { id: 'streak-30', name: 'Unbroken', tier: 'legendary', hint: 'Play 30 days running.',
+    glyph: '<path d="M32 16c6 7 11 12 11 18a11 11 0 01-22 0c0-4 3-7 6-11 1 3 3 4 4 2 1-3 1-6 1-9z" class="g-fill"/><path d="M18 40a15 15 0 003 8M46 40a15 15 0 01-3 8" class="g-stroke"/>' },
+  { id: 'level-10', name: 'Ascendant', tier: 'legendary', hint: 'Reach level 10.',
+    glyph: '<path d="M32 14l5.4 11.6L50 26.7l-9.2 8.3 2.8 12.4L32 41l-11.6 6.4 2.8-12.4L14 26.7l12.6-1.1z" class="g-fill"/>' },
+];
+
+const badgeById = (id) => BADGES.find((b) => b.id === id);
+
+/* Unlocked this session but not yet seen on the profile wall, so the medal
+ * can land with an animation the first time you go looking for it. */
+const freshBadges = new Set();
+
+/** Award anything newly earned. Returns the badges unlocked by this call. */
+function checkBadges(round = {}) {
+  const has = new Set(progress.badges);
+  const level = levelFor(progress.xp);
+  const earned = [];
+  const win = (id, cond) => {
+    if (cond && !has.has(id)) earned.push(id);
+  };
+
+  win('first-build', progress.rounds >= 1);
+  win('shipper', progress.submits >= 10);
+  win('veteran', progress.rounds >= 25);
+  win('champion', progress.wins >= 1);
+  win('dynasty', progress.wins >= 5);
+  win('streak-3', progress.streak >= 3);
+  win('streak-7', progress.streak >= 7);
+  win('streak-30', progress.streak >= 30);
+  win('daily-10', progress.dailyCount >= 10);
+  win('polyglot', progress.providers.length >= 4);
+  // Judged on the round just played, not a lifetime total.
+  win('minimalist', round.submitted && round.calls > 0 && round.calls <= 2);
+  win('token-burner', progress.tokensIn + progress.tokensOut >= 100000);
+  win('level-5', level >= 5);
+  win('level-10', level >= 10);
+
+  progress.badges.push(...earned);
+  earned.forEach((id) => freshBadges.add(id));
+  return earned.map(badgeById).filter(Boolean);
+}
+
+/**
+ * Called once when a round finishes. Everything progression-related flows
+ * through here so the counters, streak, XP and badges can never disagree.
+ */
+function recordRound({ submitted = false, won = false, rank = null, special = null,
+                       tokensIn = 0, tokensOut = 0, calls = 0, provider = null } = {}) {
+  const before = levelFor(progress.xp);
+
+  progress.rounds += 1;
+  if (submitted) progress.submits += 1;
+  if (won) progress.wins += 1;
+  progress.tokensIn += tokensIn;
+  progress.tokensOut += tokensOut;
+  progress.calls += calls;
+  if (provider && !progress.providers.includes(provider)) progress.providers.push(provider);
+
+  touchStreak();
+
+  let xp = 20;                       // showing up and seeing it through
+  if (submitted) xp += 30;
+  if (won) xp += 100;
+  else if (rank === 2 || rank === 3) xp += 50;
+  xp += 10 * Math.min(progress.streak, 7); // streak sweetener, capped
+
+  // Rotating challenges pay out once per window, so replaying today's daily
+  // for the tenth time does not farm XP.
+  const period = challengeState[special] && challengeState[special].periodKey;
+  if (special === 'daily' && period && progress.dailyDone !== period) {
+    progress.dailyDone = period;
+    progress.dailyCount += 1;
+    xp += 75;
+  } else if (special === 'weekly' && period && progress.weeklyDone !== period) {
+    progress.weeklyDone = period;
+    xp += 150;
+  }
+
+  progress.xp += xp;
+  const after = levelFor(progress.xp);
+  const badges = checkBadges({ submitted, calls });
+  saveProgress();
+
+  if (after > before) toastLevel(after);
+  badges.forEach((b, i) => setTimeout(() => toastBadge(b), (after > before ? 1 : 0) * 600 + i * 700));
+  return { xp, badges, leveledTo: after > before ? after : null };
+}
+
+/* A round can re-render many times (every broadcast, every reconnect), so the
+ * scoring above is gated on a lobby+round key the same way the confetti is. */
+let recordedRound = null;
+
+function recordRoundOnce(lobby, mine) {
+  const key = lobby.id + ':' + lobby.round;
+  if (recordedRound === key) return;
+  recordedRound = key;
+
+  // Spectators take no seat and build nothing, so there is nothing to score.
+  if (!mine || (state && state.spectating)) return;
+
+  const rows = (state && state.leaderboard) || [];
+  const idx = rows.findIndex((r) => r.participantId === me);
+  const rank = idx >= 0 ? idx + 1 : null;
+
+  recordRound({
+    submitted: !!(mine.code && mine.code.trim()),
+    // Solo practice is unscored by design, so it never counts as a win.
+    won: lobby.mode !== 'solo' && rank === 1 && rows[0] && rows[0].total > 0,
+    rank,
+    special: lobby.prompt && lobby.prompt.special,
+    tokensIn: sandbox.tokensIn,
+    tokensOut: sandbox.tokensOut,
+    calls: sandbox.requests,
+    provider: providerForTool(mine.tool),
+  });
+
+  renderProgressChip();
+}
+
+/* ---------------------------------------------------------------- toasts -- */
+
+function toast(html, kind = '') {
+  const host = $('toasts');
+  if (!host) return;
+  const el = document.createElement('div');
+  el.className = 'toast' + (kind ? ' toast-' + kind : '');
+  el.innerHTML = html;
+  host.appendChild(el);
+  // Long enough to read without becoming something you have to dismiss.
+  setTimeout(() => {
+    el.classList.add('leaving');
+    setTimeout(() => el.remove(), 400);
+  }, 4200);
+}
+
+function toastLevel(level) {
+  toast(
+    '<span class="toast-icon">&#9650;</span>' +
+      `<span><strong>Level ${level}</strong><br /><span class="toast-sub">Keep building.</span></span>`,
+    'level'
+  );
+}
+
+function toastBadge(badge) {
+  toast(
+    `<span class="toast-icon">${badgeSvg(badge, 26)}</span>` +
+      `<span><strong>${esc(badge.name)}</strong><br /><span class="toast-sub">Badge unlocked</span></span>`,
+    'badge'
+  );
+}
+
+/* A medallion rather than a bare glyph: tier-coloured rim, recessed plate,
+ * the glyph, then a highlight arc across the top so it reads as a struck
+ * object catching light instead of a flat icon. The gradients live in the
+ * page's <defs> so all fourteen share four definitions. */
+function badgeSvg(badge, size = 64) {
+  const tier = badge.tier || 'common';
+  return (
+    `<svg class="badge-art tier-${tier}" viewBox="0 0 64 64" width="${size}" height="${size}" ` +
+    'fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+    `<circle cx="32" cy="32" r="29" class="medal-rim" stroke="url(#rim-${tier})"/>` +
+    `<circle cx="32" cy="32" r="25" class="medal-plate" fill="url(#plate-${tier})"/>` +
+    `<g class="medal-glyph" stroke="url(#rim-${tier})">${badge.glyph}</g>` +
+    // Clipped to the plate so the sheen never spills past the rim.
+    '<path class="medal-sheen" d="M11 26a25 25 0 0142-6 25 25 0 00-42 6z"/>' +
+    '</svg>'
+  );
+}
+
+/* ------------------------------------------------------- progression UI -- */
+
+/** The always-on level/streak pill in the navbar. */
+function renderProgressChip() {
+  const host = $('navProgress');
+  if (!host) return;
+  const { level, pct } = levelInfo();
+  const streak = progress.streak;
+  host.innerHTML =
+    `<span class="lvl-badge">${level}</span>` +
+    '<span class="lvl-bar"><span class="lvl-bar-fill" style="width:' + pct.toFixed(1) + '%"></span></span>' +
+    (streak > 1 ? `<span class="streak-pill" title="${streak} day streak">&#128293; ${streak}</span>` : '');
+  host.hidden = false;
+}
+
+const nf = (n) => Number(n || 0).toLocaleString();
+
+function renderProfile() {
+  const host = $('profileBody');
+  if (!host) return;
+  const { level, into, span, pct } = levelInfo();
+  const earned = new Set(progress.badges);
+  const totalTokens = progress.tokensIn + progress.tokensOut;
+
+  host.innerHTML =
+    '<div class="profile-head">' +
+      `<div class="profile-level"><span class="profile-level-num">${level}</span>` +
+      '<span class="profile-level-word">Level</span></div>' +
+      '<div class="profile-xp">' +
+        `<div class="profile-xp-top"><strong>${nf(progress.xp)} XP</strong>` +
+        `<span class="muted">${nf(into)} / ${nf(span)} to level ${level + 1}</span></div>` +
+        `<div class="xp-bar"><span class="xp-bar-fill" style="width:${pct.toFixed(1)}%"></span></div>` +
+      '</div>' +
+    '</div>' +
+
+    '<div class="stat-grid">' +
+      statCard('&#128293;', progress.streak, progress.streak === 1 ? 'day streak' : 'day streak',
+               progress.bestStreak ? 'best ' + progress.bestStreak : '') +
+      statCard('&#127937;', progress.rounds, 'rounds played', nf(progress.submits) + ' shipped') +
+      statCard('&#127942;', progress.wins, 'battles won', '') +
+      statCard('&#9889;', nf(totalTokens), 'tokens spent', nf(progress.calls) + ' calls') +
+    '</div>' +
+
+    '<h3>Token usage</h3>' +
+    '<div class="token-split">' +
+      `<div class="token-row"><span>Prompt (in)</span><strong>${nf(progress.tokensIn)}</strong></div>` +
+      `<div class="token-row"><span>Completion (out)</span><strong>${nf(progress.tokensOut)}</strong></div>` +
+      `<div class="token-row token-row-total"><span>Total</span><strong>${nf(totalTokens)}</strong></div>` +
+    '</div>' +
+    '<p class="muted">Counted from your own sandbox calls, in this browser. It is a record of ' +
+    'what you spent, not a bill: with your own key the cost is yours, on the house key it is capped.</p>' +
+
+    `<h3>Badges <span class="muted">${earned.size} of ${BADGES.length}</span></h3>` +
+    '<div class="badge-grid">' +
+      BADGES.map((b) => {
+        const got = earned.has(b.id);
+        // Anything unlocked since the page was last drawn gets the landing
+        // animation once, so opening the profile after a win has a payoff.
+        const fresh = got && freshBadges.has(b.id);
+        if (fresh) freshBadges.delete(b.id);
+        return (
+          `<div class="badge${got ? ' earned' : ''}${fresh ? ' just-earned' : ''}" title="${esc(b.hint)}">` +
+          badgeSvg(b) +
+          `<span class="badge-name">${esc(b.name)}</span>` +
+          `<span class="badge-tier tier-label-${b.tier}">${b.tier}</span>` +
+          `<span class="badge-hint">${esc(b.hint)}</span>` +
+          '</div>'
+        );
+      }).join('') +
+    '</div>' +
+
+    '<h3>Starting over</h3>' +
+    '<p class="muted">Progress lives in this browser only - no account holds it, so clearing site ' +
+    'data clears this too.</p>' +
+    '<p><button class="btn" id="resetProgress" type="button">Reset my progress</button></p>';
+
+  const reset = $('resetProgress');
+  if (reset) {
+    reset.onclick = () => {
+      // Destructive and unrecoverable, so it asks first.
+      if (!confirm('Reset level, XP, badges and streak? This cannot be undone.')) return;
+      progress = freshProgress();
+      saveProgress();
+      renderProfile();
+      renderProgressChip();
+    };
+  }
+}
+
+function statCard(icon, value, label, sub) {
+  return (
+    '<div class="stat-card">' +
+    `<span class="stat-icon">${icon}</span>` +
+    `<span class="stat-value">${typeof value === 'number' ? nf(value) : value}</span>` +
+    `<span class="stat-label">${label}</span>` +
+    (sub ? `<span class="stat-sub">${esc(sub)}</span>` : '') +
+    '</div>'
+  );
+}
+
+/* ------------------------------------------------------ challenge cards -- */
+
+/** "2d 4h" / "3h 12m" / "8m" - coarse on purpose, this is a rotation not a race. */
+function untilText(ms) {
+  if (ms <= 0) return 'rotating now';
+  const m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (d > 0) return `${d}d ${h % 24}h left`;
+  if (h > 0) return `${h}h ${m % 60}m left`;
+  return `${m}m left`;
+}
+
+function renderChallengeCards() {
+  const host = $('challengeCards');
+  if (!host) return;
+  const now = Date.now();
+  const cards = [
+    { kind: 'daily', label: 'Daily challenge', icon: '&#9728;', c: challengeState.daily,
+      done: challengeState.daily && progress.dailyDone === challengeState.daily.periodKey },
+    { kind: 'weekly', label: 'Weekly challenge', icon: '&#127775;', c: challengeState.weekly,
+      done: challengeState.weekly && progress.weeklyDone === challengeState.weekly.periodKey },
+  ].filter((x) => x.c);
+
+  if (!cards.length) { host.hidden = true; return; }
+  host.hidden = false;
+  host.innerHTML = cards
+    .map(
+      (x) =>
+        `<div class="challenge-card${x.done ? ' done' : ''}">` +
+        '<div class="challenge-top">' +
+          `<span class="challenge-kind">${x.icon} ${x.label}</span>` +
+          (x.done
+            ? '<span class="chip chip-accent">&#10003; Done</span>'
+            : `<span class="challenge-timer">${untilText(x.c.expiresAt - now)}</span>`) +
+        '</div>' +
+        `<p class="challenge-name">${esc(x.c.productName)}</p>` +
+        `<p class="challenge-task">${esc(x.c.task)}</p>` +
+        '<div class="challenge-foot">' +
+          `<span class="chip chip-muted">${esc(x.c.topic)}</span>` +
+          `<button class="btn btn-primary" data-challenge="${x.kind}">Play it &#8599;</button>` +
+        '</div></div>'
+    )
+    .join('');
+
+  host.querySelectorAll('[data-challenge]').forEach((btn) => {
+    btn.onclick = () => startChallenge(btn.dataset.challenge);
+  });
+}
+
+/* Everyone plays the rotating brief solo: a shared lobby would need everyone
+ * to turn up at once, and the point is that you can take today's on your own
+ * whenever you like. */
+let pendingChallenge = null;
+
+function startChallenge(kind) {
+  pendingChallenge = kind;
+  startFlow('solo');
+}
+
 /* ---------------------------------------------------------- info pages -- *
  * Rules, scoring, keys, sponsor and about are real pages like everything
  * else in the app, not an overlay - opening one takes over the screen, and
@@ -1949,9 +2498,10 @@ function renderIdentity() {
 
 /* ------------------------------------------------------- how to play -- *
  * A walkthrough rather than a wall of text: one idea per screen, Next and Back,
- * and a dot row you can jump around with. Offered once on a first visit. */
-
-const GUIDE_SEEN = 'vibewars_guide_seen';
+ * and a dot row you can jump around with. Reached from the menu, not forced
+ * on new players - it used to auto-open on a first visit, which meant the
+ * very first thing anyone saw was a multi-step reading exercise instead of
+ * the game. */
 
 const GUIDE_STEPS = [
   {
@@ -2054,7 +2604,7 @@ function renderGuide() {
   };
   const fwd = host.querySelector('[data-guide="next"], [data-guide="done"]');
   fwd.onclick = () => {
-    if (last) { markGuideSeen(); closePage(); }
+    if (last) closePage();
     else { guideIndex++; renderGuide(); }
   };
   host.querySelectorAll('[data-go]').forEach((d) => {
@@ -2062,35 +2612,14 @@ function renderGuide() {
   });
 }
 
-function markGuideSeen() {
-  try {
-    localStorage.setItem(GUIDE_SEEN, '1');
-  } catch (e) {
-    /* nothing to remember it with; the guide just offers again */
-  }
-}
-
-/** First-timers get the walkthrough once, without being trapped in it. */
-function maybeOfferGuide() {
-  let seen = null;
-  try {
-    seen = localStorage.getItem(GUIDE_SEEN);
-  } catch (e) {
-    seen = '1'; // no storage: do not nag on every load
-  }
-  if (!seen && !location.hash) {
-    guideIndex = 0;
-    openPage('how');
-  }
-}
-
 const PAGES = {
   how: {
     title: 'How to play',
     template: 'page-how',
-    onOpen: () => { renderGuide(); markGuideSeen(); },
+    onOpen: () => renderGuide(),
   },
   scoring: { title: 'Scoring', template: 'page-scoring' },
+  profile: { title: 'Your progress', template: 'page-profile', onOpen: () => renderProfile() },
   leaderboard: { title: 'Leaderboard', template: 'page-leaderboard', onOpen: () => renderGlobalBoard() },
   keys: { title: 'Your API keys', template: 'page-keys', onOpen: () => renderKeyList() },
   sponsor: { title: 'Sponsor vibewars', template: 'page-sponsor' },
@@ -2861,10 +3390,12 @@ setInterval(flushDraft, 2000); // slow backstop for anything the events missed
 // ------------------------------------------------------------------- boot ---
 
 ensureIdentity();
+progress = loadProgress();
+renderProgressChip();
+loadChallenges();
 // The landing screen is what the markup already shows, but nothing has run
 // show()/showChoice() yet to match the chrome to it.
 syncNavChrome();
-maybeOfferGuide();
 
 connect(() => {
   const saved = sessionStorage.getItem('vibewars');

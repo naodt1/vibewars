@@ -157,6 +157,36 @@ const last = (ws, type) => [...ws.inbox].reverse().find((m) => m.type === type);
     const entry = live.find((l) => l.id === matchId);
     ok('match list marks it watchable', entry && entry.watchable === true, entry && String(entry.watchable));
 
+    // -- rotating challenges ------------------------------------------------
+    // The whole point is that everyone gets the same brief, so the endpoint
+    // has to be stable across calls and the two windows must not collide.
+    const c1 = await (await fetch(`http://localhost:${PORT}/api/challenges`)).json();
+    const c2 = await (await fetch(`http://localhost:${PORT}/api/challenges`)).json();
+    ok('daily is stable across requests', c1.daily.productName === c2.daily.productName, c1.daily.productName);
+    ok('weekly is stable across requests', c1.weekly.productName === c2.weekly.productName, c1.weekly.productName);
+    ok('daily and weekly differ', c1.daily.productName !== c1.weekly.productName);
+    ok('challenges are tagged', c1.daily.special === 'daily' && c1.weekly.special === 'weekly');
+    ok('challenges carry a period key', !!c1.daily.periodKey && !!c1.weekly.periodKey, c1.daily.periodKey);
+    ok('challenges expire in the future', c1.daily.expiresAt > Date.now());
+
+    // A host can pull the rotating brief into their lobby, and it survives a
+    // reset so "run it back" replays the same challenge.
+    const ch = await open();
+    send(ch, { type: 'solo', name: 'Daily', tool: 'x' });
+    await wait(250);
+    send(ch, { type: 'roll_prompt', special: 'daily' });
+    await wait(250);
+    const rolled = last(ch, 'state').lobby.prompt;
+    ok('lobby can roll the daily', rolled.special === 'daily' && rolled.productName === c1.daily.productName, rolled.productName);
+    send(ch, { type: 'set_minutes', minutes: 0.05 });
+    await wait(120);
+    send(ch, { type: 'start' });
+    await wait(200);
+    send(ch, { type: 'reset' });
+    await wait(300);
+    const afterReset = last(ch, 'state').lobby.prompt;
+    ok('reset keeps the same daily brief', afterReset.special === 'daily' && afterReset.productName === c1.daily.productName, afterReset.productName);
+
     // Server survives.
     const final = await open();
     send(final, { type: 'solo', name: 'Last', tool: 'x' });

@@ -4,12 +4,18 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>vibewars: multiplayer vibe coding battles with AI models</title>
-<meta name="description" content="4-6 players, one randomly rolled brief, one clock. Everyone builds it in raw HTML with GPT, Claude, Gemini, Grok or whatever model they like, then you all score each other." />
-<!-- SITE_URL: replace every https://vibewars.example below with the real domain before deploying. -->
-<link rel="canonical" href="https://vibewars.example/" />
-<meta name="robots" content="index, follow" />
+<!-- Kept under ~155 characters so search results show it whole rather than
+     cutting it mid-sentence. The og/twitter copy below can afford to be
+     longer, since social cards allow more. -->
+<meta name="description" content="A browser party game for developers. Same brief, same clock, different models: build it with GPT, Claude, Gemini or Grok, then score each other." />
+<meta name="keywords" content="vibe coding, coding game, AI coding battle, multiplayer coding, LLM game, GPT vs Claude, developer party game" />
+<!-- SITE_URL: every absolute URL on this page points at the domain below. -->
+<link rel="canonical" href="https://vibewars.naodtadele.com/" />
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
 <meta name="theme-color" content="#141414" />
 <meta name="color-scheme" content="dark light" />
+<meta name="author" content="vibewars" />
+<meta name="application-name" content="vibewars" />
 <script>
   // Set before first paint so a returning light-mode user never sees a dark flash.
   try {
@@ -18,38 +24,105 @@
   } catch (e) {}
 </script>
 <meta property="og:title" content="vibewars: multiplayer vibe coding battles with AI models" />
-<meta property="og:description" content="4-6 players, one randomly rolled brief, one clock. Everyone builds it in raw HTML with GPT, Claude, Gemini, Grok or whatever model they like, then you all score each other." />
+<meta property="og:description" content="Same brief, same clock, different models. Build it with GPT, Claude, Gemini or Grok, then score each other. Solo or 4-6 players, free, no accounts." />
 <meta property="og:type" content="website" />
-<meta property="og:url" content="https://vibewars.example/" />
+<meta property="og:url" content="https://vibewars.naodtadele.com/" />
 <meta property="og:site_name" content="vibewars" />
 <meta property="og:locale" content="en_US" />
-<meta property="og:image" content="https://vibewars.example/og-image.png" />
+<meta property="og:image" content="https://vibewars.naodtadele.com/og-image.png" />
+<meta property="og:image:secure_url" content="https://vibewars.naodtadele.com/og-image.png" />
+<meta property="og:image:type" content="image/png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
-<meta property="og:image:alt" content="vibewars: Wanna play vibe coding? 4-6 players, same brief, same clock, different models." />
+<meta property="og:image:alt" content="vibewars: Wanna play vibe coding? Same brief, same clock, different models." />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="vibewars: multiplayer vibe coding battles with AI models" />
-<meta name="twitter:description" content="4-6 players, one randomly rolled brief, one clock. Everyone builds it in raw HTML with GPT, Claude, Gemini, Grok or whatever model they like, then you all score each other." />
-<meta name="twitter:image" content="https://vibewars.example/og-image.png" />
+<meta name="twitter:description" content="Same brief, same clock, different models. Build it with GPT, Claude, Gemini or Grok, then score each other. Solo or 4-6 players, free, no accounts." />
+<meta name="twitter:image" content="https://vibewars.naodtadele.com/og-image.png" />
+<meta name="twitter:image:alt" content="vibewars: Wanna play vibe coding? Same brief, same clock, different models." />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23101010'/%3E%3Cpath d='M16 4 Q17.6 14.4 28 16 Q17.6 17.6 16 28 Q14.4 17.6 4 16 Q14.4 14.4 16 4Z' fill='%23FF7A2F'/%3E%3C/svg%3E" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<link rel="manifest" href="/site.webmanifest" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Outfit:wght@400;500;600;700;800&family=Fredoka:wght@500;600;700&display=swap" rel="stylesheet" />
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
-  "@type": "VideoGame",
-  "name": "vibewars",
-  "url": "https://vibewars.example/",
-  "description": "4-6 players, one randomly rolled brief, one clock. Everyone builds it in raw HTML with GPT, Claude, Gemini, Grok or whatever model they like, then you all score each other.",
-  "genre": ["Coding game", "Party game", "Multiplayer"],
-  "playMode": "MultiPlayer",
-  "numberOfPlayers": { "@type": "QuantitativeValue", "minValue": 4, "maxValue": 6 },
-  "applicationCategory": "Game",
-  "operatingSystem": "Any (runs in a browser)",
-  "isAccessibleForFree": true,
-  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-  "image": "https://vibewars.example/og-image.png"
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://vibewars.naodtadele.com/#website",
+      "url": "https://vibewars.naodtadele.com/",
+      "name": "vibewars",
+      "description": "Multiplayer vibe coding battles with AI models.",
+      "inLanguage": "en"
+    },
+    {
+      "@type": "VideoGame",
+      "@id": "https://vibewars.naodtadele.com/#game",
+      "name": "vibewars",
+      "url": "https://vibewars.naodtadele.com/",
+      "description": "A browser party game for developers. Everyone gets the same surprise brief and the same clock, builds it with GPT, Claude, Gemini or Grok, then you all score each other. Play solo or with 4-6 people.",
+      "genre": ["Coding game", "Party game", "Multiplayer"],
+      "playMode": ["MultiPlayer", "SinglePlayer"],
+      "numberOfPlayers": { "@type": "QuantitativeValue", "minValue": 1, "maxValue": 6 },
+      "applicationCategory": "GameApplication",
+      "operatingSystem": "Any (runs in a browser)",
+      "browserRequirements": "Requires JavaScript and a modern browser",
+      "isAccessibleForFree": true,
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+      "image": "https://vibewars.naodtadele.com/og-image.png",
+      "license": "https://opensource.org/licenses/MIT",
+      "isPartOf": { "@id": "https://vibewars.naodtadele.com/#website" }
+    },
+    {
+      "@type": "FAQPage",
+      "@id": "https://vibewars.naodtadele.com/#faq",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "What is vibe coding?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Building software by prompting a language model rather than writing the code yourself. In vibewars everyone does it against the same brief and the same clock, so you can see which model and which prompting style actually wins."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Do I need an account to play?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. There are no accounts and no passwords. Open a lobby, share the six-character code, and play."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Do I need my own API key?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Not necessarily. If the instance you are playing on funds a shared house key you get a capped number of prompts per round for free. Connecting your own key removes the cap, and it stays in your browser and is never sent to the server."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Can I play on my own?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. Solo mode deals you a real brief and a real clock for practice. Nothing is scored and nobody else can watch."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How many people can play?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "A multiplayer lobby holds four to six players. You can also play solo, or watch a battle in progress without taking a seat."
+          }
+        }
+      ]
+    }
+  ]
 }
 </script>
 <style>
@@ -492,6 +565,225 @@ textarea[readonly] { background: var(--field-locked); color: var(--muted); }
 .picker-model.selected { color: var(--accent); font-weight: 600; }
 .picker-other { padding: 14px 16px; display: flex; gap: 10px; align-items: center; }
 .picker-other input { flex: 1; font-size: 14px; padding: 10px 12px; }
+
+/* One-click shortcuts above the accordion: last pick plus one model per
+   provider, so a repeat choice or a common model never needs opening a
+   provider group at all. */
+.picker-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.picker-quick-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--pill);
+  padding: 7px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, transform .12s ease;
+}
+.picker-quick-chip:hover { border-color: var(--accent); transform: translateY(-1px); }
+.picker-quick-chip.selected { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+/* The one chip worth calling out before you even read its label. */
+.picker-quick-chip-last { border-color: var(--accent); background: var(--accent-soft); }
+.picker-quick-tag {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* ----------------------------------------------------------- progression -- */
+/* Navbar pill: level, a thin progress bar, and the streak when there is one. */
+.nav-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--pill);
+  padding: 5px 12px 5px 6px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color .15s ease, transform .12s ease;
+}
+.nav-progress:hover { border-color: var(--accent); transform: translateY(-1px); }
+.lvl-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: var(--pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+.lvl-bar { width: 42px; height: 4px; border-radius: var(--pill); background: var(--surface-3); overflow: hidden; }
+.lvl-bar-fill { display: block; height: 100%; background: var(--accent); border-radius: var(--pill); transition: width .5s cubic-bezier(.2,.9,.3,1); }
+.streak-pill { font-size: 12px; font-weight: 700; color: var(--fg); }
+
+/* Profile page */
+.profile-head { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; margin-bottom: 26px; }
+.profile-level { display: flex; flex-direction: column; align-items: center; line-height: 1; }
+.profile-level-num { font-family: var(--font-display); font-size: 54px; font-weight: 600; color: var(--accent); }
+.profile-level-word { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); }
+.profile-xp { flex: 1; min-width: 240px; }
+.profile-xp-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; font-size: 14px; }
+.xp-bar { height: 10px; border-radius: var(--pill); background: var(--surface-3); overflow: hidden; }
+.xp-bar-fill {
+  display: block; height: 100%; border-radius: var(--pill);
+  background: linear-gradient(90deg, var(--accent-deep), var(--accent));
+  transition: width .6s cubic-bezier(.2,.9,.3,1);
+}
+
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 30px; }
+.stat-card {
+  display: flex; flex-direction: column; gap: 3px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); padding: 16px;
+}
+.stat-icon { font-size: 18px; }
+.stat-value { font-family: var(--font-display); font-size: 26px; font-weight: 600; line-height: 1.1; }
+.stat-label { font-size: 12px; color: var(--muted); }
+.stat-sub { font-size: 11px; color: var(--faint); }
+
+.token-split { border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; margin-bottom: 8px; }
+.token-row { display: flex; justify-content: space-between; padding: 12px 16px; font-size: 14px; }
+.token-row + .token-row { border-top: 1px solid var(--line); }
+.token-row-total { background: var(--surface-2); font-weight: 600; }
+
+.badge-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 12px; }
+.badge {
+  display: flex; flex-direction: column; align-items: center; text-align: center; gap: 7px;
+  padding: 16px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  /* Locked badges read as silhouettes so the shape is a hint, not a spoiler. */
+  opacity: .38; filter: grayscale(1);
+  transition: opacity .2s ease, filter .2s ease, border-color .2s ease, transform .2s ease;
+}
+.badge.earned { opacity: 1; filter: none; border-color: var(--line-strong); }
+.badge.earned:hover { border-color: var(--accent); transform: translateY(-2px); }
+.badge.earned:hover .badge-art { transform: translateY(-2px) rotate(-3deg); }
+
+/* --- medallions --- */
+.svg-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+.badge-art { transition: transform .25s cubic-bezier(.2, 1.1, .5, 1); overflow: visible; }
+.medal-rim { stroke-width: 3.5; fill: none; }
+.medal-glyph {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* Fills take the rim's gradient too, so glyph and rim are cut from one metal. */
+.medal-glyph .g-fill { fill: currentColor; stroke: none; }
+.medal-glyph .g-stroke { fill: none; }
+.tier-common  .medal-glyph { color: #9AA0A9; }
+.tier-rare    .medal-glyph { color: #FF9350; }
+.tier-epic    .medal-glyph { color: #BC82F5; }
+.tier-legendary .medal-glyph { color: #FFCE63; }
+.medal-sheen { fill: #fff; opacity: .07; }
+/* Only the top two tiers glow, so the wall has a clear peak. */
+.badge.earned .tier-epic { filter: drop-shadow(0 0 7px rgba(165, 92, 240, .45)); }
+.badge.earned .tier-legendary { filter: drop-shadow(0 0 9px rgba(255, 194, 75, .5)); }
+
+.badge-name { font-size: 13px; font-weight: 600; }
+.badge-hint { font-size: 11px; line-height: 1.4; color: var(--faint); }
+/* Rarity is worth naming, not just colouring. */
+.badge-tier {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+}
+.badge .badge-tier { color: var(--faint); }
+.badge.earned .tier-label-common { color: #9AA0A9; }
+.badge.earned .tier-label-rare { color: #FF9350; }
+.badge.earned .tier-label-epic { color: #BC82F5; }
+.badge.earned .tier-label-legendary { color: #FFCE63; }
+
+/* The unlock: the medal lands, then a ring pings outward off it. */
+.badge.just-earned .badge-art { animation: medal-land .55s cubic-bezier(.2, 1.3, .4, 1); }
+.badge.just-earned { position: relative; }
+.badge.just-earned::after {
+  content: '';
+  position: absolute;
+  top: 16px; left: 50%;
+  width: 64px; height: 64px;
+  margin-left: -32px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  animation: medal-ping .7s ease-out forwards;
+  pointer-events: none;
+}
+@keyframes medal-land {
+  0% { opacity: 0; transform: scale(.4) rotate(-25deg); }
+  70% { transform: scale(1.12) rotate(4deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0); }
+}
+@keyframes medal-ping {
+  from { opacity: .8; transform: scale(.7); }
+  to { opacity: 0; transform: scale(1.7); }
+}
+
+/* --- film grain --- */
+/* An inline SVG turbulence tile: no image request, tiles seamlessly, and sits
+   under every interactive layer so it can never eat a click. */
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: .035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+:root[data-theme="light"] .grain { opacity: .022; }
+
+/* Challenge cards */
+.challenge-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 22px; }
+.challenge-card {
+  display: flex; flex-direction: column; gap: 10px;
+  background: var(--surface-2); border: 1px solid var(--line-strong);
+  border-radius: 16px; padding: 20px;
+}
+.challenge-card.done { border-color: var(--accent); background: var(--accent-soft); }
+.challenge-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.challenge-kind { font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.challenge-timer { font-size: 12px; color: var(--faint); }
+.challenge-name { font-family: var(--font-display); font-size: 22px; font-weight: 600; margin: 0; }
+.challenge-task { margin: 0; font-size: 14px; line-height: 1.5; color: var(--muted); }
+.challenge-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; }
+
+/* Toasts */
+.toasts {
+  position: fixed; right: 20px; bottom: 20px; z-index: 200;
+  display: flex; flex-direction: column; gap: 10px;
+  pointer-events: none;
+}
+.toast {
+  display: flex; align-items: center; gap: 12px;
+  min-width: 230px; max-width: 320px;
+  background: var(--surface-2); border: 1px solid var(--accent);
+  border-radius: var(--radius-sm); padding: 13px 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  font-size: 14px;
+  animation: toast-in .32s cubic-bezier(.2, 1.1, .5, 1);
+}
+.toast.leaving { animation: toast-out .4s ease forwards; }
+.toast-icon { display: inline-flex; color: var(--accent); font-size: 18px; flex: 0 0 auto; }
+.toast-sub { font-size: 12px; color: var(--muted); }
+@keyframes toast-in { from { opacity: 0; transform: translateX(28px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes toast-out { to { opacity: 0; transform: translateX(28px); } }
 
 /* ---------------------------------------------------------------- prompt -- */
 .prompt-card {
@@ -1764,11 +2056,13 @@ input:focus, textarea:focus, select:focus { box-shadow: 0 0 0 3px var(--accent-s
   .guide-body, .guide-dot,
   .anim-in, .anim-stagger > *, .wiz-step.active, .countdown.urgent,
   .winner, .choice, .choice-art, .choice-go,
-  .btn, .nav-link::after, .picker-model, .stars label,
+  .btn, .nav-link::after, .picker-model, .picker-quick-chip, .stars label,
   .vote-dot, .sponsor-slot, .tile, .roster li, .wiz-progress span,
   #grid.stage .tile.active, .prompt-card.rolled,
   #error:not(:empty), #themeToggle, .tab, .tab.active, .logo,
-  input, textarea, select, .editor, .slot-icon, .slot-icon img, .slot-hover {
+  input, textarea, select, .editor, .slot-icon, .slot-icon img, .slot-hover,
+  .nav-progress, .lvl-bar-fill, .xp-bar-fill, .badge, .toast,
+  .badge-art, .badge.just-earned .badge-art, .badge.just-earned::after {
     animation: none !important;
     transition: none !important;
     transform: none !important;
@@ -1873,6 +2167,8 @@ section.visible { display: block; }
       <button class="nav-link" data-page="about">About</button>
     </div>
     <div class="nav-right">
+      <button id="navProgress" class="nav-progress" data-page="profile" type="button"
+              aria-label="Your progress" title="Your progress" hidden></button>
       <button id="themeToggle" class="nav-link" aria-label="Switch theme" title="Switch theme">&#9789;</button>
     </div>
   </div>
@@ -1899,7 +2195,7 @@ section.visible { display: block; }
   <div id="entryChoice">
     <div class="hero">
       <div class="hero-copy">
-        <p class="tagline">Vibe coding game<span class="tagline-dots"><i>.</i><i>.</i><i>.</i></span></p>
+        <p class="tagline">The first vibe coding game<span class="tagline-dots"><i>.</i><i>.</i><i>.</i></span></p>
         <h1 class="game-title">vibe<em>wars</em></h1>
         <nav class="game-menu" aria-label="Main menu">
           <button class="menu-item" id="menuPlay">
@@ -1970,6 +2266,9 @@ section.visible { display: block; }
     <div class="play-head">
       <span class="meta">No accounts. No passwords. Just play.</span>
     </div>
+
+    <!-- Today's and this week's brief, same for everyone, filled by JS. -->
+    <div id="challengeCards" class="challenge-cards" hidden></div>
 
     <div class="choice-grid">
       <button class="choice" id="chooseSolo">
@@ -2362,10 +2661,47 @@ section.visible { display: block; }
 </section>
 </div>
 
+<!-- Shared paint for every badge medallion, defined once. Zero-size so it
+     never affects layout; the gradients are referenced by url(#id). -->
+<svg class="svg-defs" width="0" height="0" aria-hidden="true" focusable="false"><defs>
+  <linearGradient id="rim-common" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0%" stop-color="#B9BDC4"/><stop offset="55%" stop-color="#7E848D"/><stop offset="100%" stop-color="#5A606A"/>
+  </linearGradient>
+  <linearGradient id="rim-rare" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0%" stop-color="#FFB07A"/><stop offset="55%" stop-color="#FF7A2F"/><stop offset="100%" stop-color="#C1590F"/>
+  </linearGradient>
+  <linearGradient id="rim-epic" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0%" stop-color="#D8B4FF"/><stop offset="55%" stop-color="#A55CF0"/><stop offset="100%" stop-color="#6C2FB0"/>
+  </linearGradient>
+  <linearGradient id="rim-legendary" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0%" stop-color="#FFE9A8"/><stop offset="45%" stop-color="#FFC24B"/><stop offset="100%" stop-color="#C98A0E"/>
+  </linearGradient>
+  <!-- Plates are lit from the top-left so every medal agrees on a light source. -->
+  <radialGradient id="plate-common" cx="35%" cy="28%" r="80%">
+    <stop offset="0%" stop-color="#3A3E45"/><stop offset="100%" stop-color="#1B1D21"/>
+  </radialGradient>
+  <radialGradient id="plate-rare" cx="35%" cy="28%" r="80%">
+    <stop offset="0%" stop-color="#4A2A16"/><stop offset="100%" stop-color="#1E1410"/>
+  </radialGradient>
+  <radialGradient id="plate-epic" cx="35%" cy="28%" r="80%">
+    <stop offset="0%" stop-color="#33204D"/><stop offset="100%" stop-color="#171125"/>
+  </radialGradient>
+  <radialGradient id="plate-legendary" cx="35%" cy="28%" r="80%">
+    <stop offset="0%" stop-color="#4C3A12"/><stop offset="100%" stop-color="#1F1806"/>
+  </radialGradient>
+</defs></svg>
+
+<!-- A whisper of film grain over the whole page. Flat dark fields band badly
+     on cheap panels; noise this faint reads as texture, not as dirt. -->
+<div class="grain" aria-hidden="true"></div>
+
+<!-- Level-ups and badge unlocks land here. Fixed, non-blocking, self-dismissing. -->
+<div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+
 <footer class="site-footer">
   <div class="footer-inner">
     <span class="footer-brand"><span class="logo footer-logo"><span class="logo-vibe">vibe</span><span class="logo-wars">wars</span></span>
-      <span class="meta">Vibe coding game</span></span>
+      <span class="meta">The first vibe coding game</span></span>
     <div class="footer-links">
       <button class="nav-link" data-page="how">How to play</button>
       <button class="nav-link" data-page="scoring">Scoring</button>
@@ -2379,6 +2715,10 @@ section.visible { display: block; }
 
 <template id="page-how">
   <div id="guide" class="guide"></div>
+</template>
+
+<template id="page-profile">
+  <div id="profileBody"></div>
 </template>
 
 <template id="page-scoring">

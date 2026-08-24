@@ -1,4 +1,8 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://vibewars.example/sitemap.xml
+# Lobby and battle state lives behind the websocket, not on crawlable URLs,
+# so there is nothing here to keep a crawler out of. The API is not content.
+Disallow: /api/
+
+Sitemap: https://vibewars.naodtadele.com/sitemap.xml
