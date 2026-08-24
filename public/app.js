@@ -1400,12 +1400,6 @@ function renderLobby(lobby, participants, isHost) {
 
   $('hostSetup').style.display = isHost ? 'block' : 'none';
   $('guestWait').style.display = isHost ? 'none' : 'block';
-  if (isHost) {
-    syncPromptControls(lobby);
-    if (document.activeElement !== $('minutesInput')) {
-      $('minutesInput').value = lobby.durationMinutes;
-    }
-  }
   renderPromptCard($('promptCardLobby'), lobby);
   $('durationOut').textContent = lobby.durationMinutes;
 }
@@ -1418,10 +1412,6 @@ function renderSoloSetup(lobby) {
   $('rosterControls').style.display = 'none';
   $('hostSetup').style.display = 'block';
   $('guestWait').style.display = 'none';
-  syncPromptControls(lobby);
-  if (document.activeElement !== $('minutesInput')) {
-    $('minutesInput').value = lobby.durationMinutes;
-  }
   renderPromptCard($('promptCardLobby'), lobby);
   $('durationOut').textContent = lobby.durationMinutes;
 }
@@ -1457,17 +1447,6 @@ function renderPromptCard(el, lobby) {
     void el.offsetWidth;
     el.classList.add('rolled');
   }
-}
-
-/** Fill the topic/difficulty dropdowns once, then keep them in sync. */
-function syncPromptControls(lobby) {
-  const topicSel = $('topicSelect');
-  if (!topicSel.options.length) {
-    topicSel.innerHTML =
-      '<option value="RANDOM">Any topic</option>' +
-      lobby.topics.map((t) => `<option value="${t}">${esc(t)}</option>`).join('');
-  }
-  if (document.activeElement !== topicSel) topicSel.value = lobby.topic || 'RANDOM';
 }
 
 // --- build phase ---
@@ -3316,14 +3295,38 @@ setInterval(() => {
   if ($('entry').classList.contains('visible') && !$('multiplayerScreen').hidden) loadLobbies();
 }, 3000);
 
-const rollPrompt = () => sendMsg({ type: 'roll_prompt', topic: $('topicSelect').value });
+/* The die tumbles while the roll is in flight. The face is driven by a data
+ * attribute rather than seven class toggles, and the shuffle is cosmetic -
+ * the brief itself is always the server's pick, never this number. */
+let dieTimer = null;
+
+function rollDieAnimation() {
+  const die = $('rollDie');
+  const btn = $('rollBtn');
+  if (!die) return;
+  clearInterval(dieTimer);
+  die.classList.add('rolling');
+  btn.classList.add('is-rolling');
+
+  const started = Date.now();
+  dieTimer = setInterval(() => {
+    die.dataset.face = String(1 + Math.floor(Math.random() * 6));
+    // Long enough to read as a throw, short enough not to gate the reveal.
+    if (Date.now() - started > 620) {
+      clearInterval(dieTimer);
+      die.classList.remove('rolling');
+      btn.classList.remove('is-rolling');
+      die.dataset.face = String(1 + Math.floor(Math.random() * 6));
+    }
+  }, 80);
+}
+
+const rollPrompt = () => {
+  rollDieAnimation();
+  sendMsg({ type: 'roll_prompt' });
+};
 
 $('rollBtn').onclick = rollPrompt;
-// Changing the filter immediately rolls a matching brief.
-$('topicSelect').onchange = rollPrompt;
-
-$('minutesInput').onchange = () =>
-  sendMsg({ type: 'set_minutes', minutes: Number($('minutesInput').value) });
 
 $('startBtn').onclick = () =>
   sendMsg({ type: 'start', allowUnderMin: $('allowUnderMin').checked });
