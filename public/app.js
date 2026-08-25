@@ -2625,9 +2625,15 @@ function railSlots() {
   }));
 }
 
-/** The month a booking would be for, which is what the enquiry is about. */
+/* The month a booking is actually for: the next one, never the current one.
+ * A slot runs the calendar month, so selling the month already in progress
+ * would be selling a part-month that is disappearing as the sponsor reads
+ * the page. Setting the day to 1 first avoids the end-of-month trap where
+ * adding a month to the 31st skips a month entirely. */
 function bookingMonth() {
-  return new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth() + 1, 1)
+    .toLocaleString('en-US', { month: 'long', year: 'numeric' });
 }
 
 function renderSponsorQuota() {
