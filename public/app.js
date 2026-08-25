@@ -2599,13 +2599,217 @@ const PAGES = {
   },
   scoring: { title: 'Scoring', template: 'page-scoring' },
   profile: { title: 'Your progress', template: 'page-profile', onOpen: () => renderProfile() },
-  leaderboard: { title: 'Leaderboard', template: 'page-leaderboard', onOpen: () => renderGlobalBoard() },
+  leaderboard: {
+    title: 'Leaderboard',
+    template: 'page-leaderboard',
+    onOpen: () => { renderPlayerBoard(); renderGlobalBoard(); },
+  },
   keys: { title: 'Your API keys', template: 'page-keys', onOpen: () => renderKeyList() },
-  sponsor: { title: 'Sponsor vibewars', template: 'page-sponsor' },
+  sponsor: { title: 'Sponsor vibewars', template: 'page-sponsor', onOpen: () => renderSponsorQuota() },
   about: { title: 'About vibewars', template: 'page-about' },
 };
 
 /** All-time standings by declared model, from the battle archive. */
+/* Availability and the slot picker.
+ *
+ * Both read the live rail rather than a written-down list, so the page can
+ * never offer a slot that has already been filled. */
+const SPONSOR_REPO = 'https://github.com/naodt1/vibewars';
+
+function railSlots() {
+  return [...document.querySelectorAll('.rail .sponsor-slot')].map((el, i) => ({
+    number: i + 1,
+    taken: el.classList.contains('sponsor-slot-filled'),
+    // The occupant's name, so a taken slot can say who has it.
+    holder: el.querySelector('.slot-title') ? el.querySelector('.slot-title').textContent.trim() : '',
+  }));
+}
+
+/** The month a booking would be for, which is what the enquiry is about. */
+function bookingMonth() {
+  return new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
+}
+
+function renderSponsorQuota() {
+  const host = $('sponsorQuota');
+  if (!host) return;
+  const slots = railSlots();
+  const total = slots.length;
+  const open = slots.filter((s) => !s.taken).length;
+  const taken = total - open;
+
+  host.innerHTML =
+    '<div class="quota-head">' +
+      `<span class="quota-num">${open}</span>` +
+      `<span class="quota-of">of ${total} slots open for ${esc(bookingMonth())}</span>` +
+    '</div>' +
+    '<div class="quota-pips">' +
+      slots
+        .map((s) => `<span class="quota-pip${s.taken ? ' taken' : ''}" title="${s.taken ? 'Taken' : 'Open'}"></span>`)
+        .join('') +
+    '</div>' +
+    (open === 0
+      ? '<p class="muted" style="margin:12px 0 0">All five are booked this month. Enquire anyway and we will hold you the next opening.</p>'
+      : `<p class="muted" style="margin:12px 0 0">${taken} booked, ${open} open.</p>`);
+
+  renderSlotPicker();
+}
+
+let selectedSlot = null;
+
+function renderSlotPicker() {
+  const host = $('slotPicker');
+  if (!host) return;
+  const slots = railSlots();
+
+  // Default to the first free slot so the enquiry button is usable immediately.
+  if (selectedSlot === null) {
+    const firstOpen = slots.find((s) => !s.taken);
+    selectedSlot = firstOpen ? firstOpen.number : null;
+  }
+
+  host.innerHTML = slots
+    .map((s) => {
+      const isSel = s.number === selectedSlot;
+      return (
+        `<button type="button" class="slot-opt${s.taken ? ' taken' : ''}${isSel ? ' selected' : ''}"` +
+        ` data-slot="${s.number}"${s.taken ? ' disabled aria-disabled="true"' : ''}>` +
+        `<span class="slot-opt-num">${s.number}</span>` +
+        `<span class="slot-opt-state">${s.taken ? esc(s.holder || 'Taken') : 'Open'}</span>` +
+        '</button>'
+      );
+    })
+    .join('');
+
+  host.querySelectorAll('[data-slot]').forEach((b) => {
+    if (b.disabled) return;
+    b.onclick = () => { selectedSlot = Number(b.dataset.slot); renderSlotPicker(); };
+  });
+
+  renderSlotInquiry();
+}
+
+/** The enquiry itself, addressed to whichever slot is selected. */
+function renderSlotInquiry() {
+  const host = $('slotInquire');
+  if (!host) return;
+  if (selectedSlot === null) {
+    host.innerHTML =
+      '<span class="muted">Every slot is booked this month. ' +
+      `<a href="${SPONSOR_REPO}/issues/new" target="_blank" rel="noopener">Join the waiting list</a>.</span>`;
+    return;
+  }
+  const month = bookingMonth();
+  // Pre-fill the issue so the enquiry arrives with the slot and month on it
+  // rather than as a blank "interested in sponsoring".
+  const title = encodeURIComponent(`Sponsor enquiry: slot ${selectedSlot} for ${month}`);
+  const body = encodeURIComponent(
+    `Slot: ${selectedSlot}\nMonth: ${month}\n\n` +
+      'Product:\nOne-line description:\nLink:\n\nAnything else:\n'
+  );
+  host.innerHTML =
+    `<a class="btn btn-primary btn-lg" href="${SPONSOR_REPO}/issues/new?title=${title}&body=${body}"` +
+    ` target="_blank" rel="noopener">Inquire about slot ${selectedSlot} &#8599;</a>` +
+    `<span class="slot-inquire-note">For ${esc(month)}. Opens a pre-filled enquiry.</span>`;
+}
+
+/* ------------------------------------------------------ player standings -- */
+
+let playerBoards = null;   // cached /api/players payload
+let lbCategory = 'xp';     // which ranking is on screen
+
+function loadPlayers() {
+  if (playerBoards) return Promise.resolve(playerBoards);
+  return fetch('/api/players')
+    .then((r) => r.json())
+    .then((d) => (playerBoards = d))
+    .catch(() => null); // offline: the board shows its empty state
+}
+
+const fmtValue = (v, unit) =>
+  unit === '/5' ? Number(v).toFixed(2) : Number(v).toLocaleString();
+
+/** One ranked table for the selected category. */
+function playerTable(rows, unit, limit) {
+  if (!rows || !rows.length) {
+    return '<p class="muted">&#127942; Nobody on the board yet. Win a battle and put your name here.</p>';
+  }
+  const shown = limit ? rows.slice(0, limit) : rows;
+  return (
+    '<ol class="lb-list">' +
+    shown
+      .map((r, i) => {
+        const me = identity && r.name.toLowerCase() === identity.nickname.toLowerCase();
+        return (
+          `<li class="lb-row rank-${i + 1}${me ? ' is-me' : ''}">` +
+          `<span class="lb-rank">${i + 1}</span>` +
+          '<span class="lb-who">' +
+            `<span class="lb-name">${esc(r.name)}</span>` +
+            // Seeded names say so plainly: the board should look alive without
+            // presenting invented results as real play.
+            (r.seeded ? '<span class="lb-seed">sample</span>' : '') +
+            (me ? '<span class="lb-you">you</span>' : '') +
+          '</span>' +
+          `<span class="lb-meta">${Number(r.battles) || 0} battles</span>` +
+          `<span class="lb-value">${fmtValue(r.value, unit)}<span class="lb-unit">${esc(unit)}</span></span>` +
+          '</li>'
+        );
+      })
+      .join('') +
+    '</ol>'
+  );
+}
+
+/** The full leaderboard page: category tabs over a ranked player list. */
+async function renderPlayerBoard() {
+  const host = $('playerBoard');
+  const tabs = $('lbTabs');
+  if (!host) return;
+  host.innerHTML = '<p class="muted">Counting up&#8230;</p>';
+
+  const data = await loadPlayers();
+  if (!data) {
+    host.innerHTML = '<p class="muted">Could not reach the board just now.</p>';
+    return;
+  }
+  if (tabs) {
+    tabs.innerHTML = data.categories
+      .map(
+        (c) =>
+          `<button class="lb-tab${c.id === lbCategory ? ' active' : ''}" data-cat="${c.id}">` +
+          `${esc(c.label)}</button>`
+      )
+      .join('');
+    tabs.querySelectorAll('[data-cat]').forEach((b) => {
+      b.onclick = () => { lbCategory = b.dataset.cat; renderPlayerBoard(); };
+    });
+  }
+  const cat = data.categories.find((c) => c.id === lbCategory) || data.categories[0];
+  host.innerHTML = playerTable(data.boards[cat.id], cat.unit);
+}
+
+/** The landing page's top five, with a way through to the whole thing. */
+async function renderHomeBoard() {
+  const host = $('homeBoard');
+  if (!host) return;
+  const data = await loadPlayers();
+  if (!data || !data.boards.xp || !data.boards.xp.length) {
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+  host.innerHTML =
+    '<div class="home-board-head">' +
+      '<h2 class="home-board-title">&#127942; Top players</h2>' +
+      '<span class="muted">by XP</span>' +
+    '</div>' +
+    playerTable(data.boards.xp, 'XP', 5) +
+    '<button class="btn btn-block" data-page="leaderboard">Full leaderboard &#8594;</button>';
+  host.querySelectorAll('[data-page]').forEach((el) => {
+    el.onclick = () => openPage(el.dataset.page);
+  });
+}
+
 async function renderGlobalBoard() {
   const host = $('globalBoard');
   if (!host) return;
@@ -3396,6 +3600,7 @@ ensureIdentity();
 progress = loadProgress();
 renderProgressChip();
 loadChallenges();
+renderHomeBoard();
 // The landing screen is what the markup already shows, but nothing has run
 // show()/showChoice() yet to match the chrome to it.
 syncNavChrome();

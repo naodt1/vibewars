@@ -152,6 +152,58 @@ async function toolStandings() {
   return data;
 }
 
+/**
+ * Per-player standings, aggregated in this process rather than in a view.
+ *
+ * The archive stores one row per player per battle, so everything the board
+ * needs is already there - it just has to be grouped by player. Doing it here
+ * rather than as a SQL view means it works against the existing schema with
+ * no migration, which matters because the deployed archive is the one thing
+ * here that cannot be changed from a code push alone.
+ *
+ * Stand-ins are excluded: a leaderboard of people should not rank the bots.
+ */
+async function playerStandings() {
+  if (!client) return null;
+  const { data, error } = await client
+    .from('entries')
+    .select('player_name, rank, total, avg_aesthetic, tokens_in, tokens_out, xp')
+    .eq('is_bot', false)
+    .limit(5000);
+  if (error) {
+    // tokens_in/xp are newer columns; an older archive will not have them, and
+    // that should degrade to "no token data" rather than killing the board.
+    console.error('supabase: player standings query failed -', error.message);
+    return null;
+  }
+
+  const byName = new Map();
+  for (const row of data || []) {
+    const name = row.player_name;
+    if (!name) continue;
+    const p = byName.get(name) || {
+      name, battles: 0, wins: 0, totalScore: 0, aestheticScore: 0, tokens: 0, xp: 0,
+    };
+    p.battles += 1;
+    if (Number(row.rank) === 1) p.wins += 1;
+    p.totalScore += Number(row.total) || 0;
+    p.aestheticScore += Number(row.avg_aesthetic) || 0;
+    p.tokens += (Number(row.tokens_in) || 0) + (Number(row.tokens_out) || 0);
+    p.xp += Number(row.xp) || 0;
+    byName.set(name, p);
+  }
+
+  return [...byName.values()].map((p) => ({
+    name: p.name,
+    battles: p.battles,
+    wins: p.wins,
+    xp: p.xp,
+    tokens: p.tokens,
+    avgTotal: p.battles ? p.totalScore / p.battles : 0,
+    avgAesthetic: p.battles ? p.aestheticScore / p.battles : 0,
+  }));
+}
+
 /** The most recent finished battles, newest first. */
 async function recentBattles(limit = 10) {
   if (!client) return null;
@@ -167,4 +219,4 @@ async function recentBattles(limit = 10) {
   return data;
 }
 
-module.exports = { isEnabled, recordBattle, toolStandings, recentBattles };
+module.exports = { isEnabled, recordBattle, toolStandings, recentBattles, playerStandings };

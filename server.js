@@ -1432,6 +1432,67 @@ app.get('/api/lobbies', (_req, res) => {
 
 // Battle history, when a database is attached. Returns 503 rather than
 // pretending, so the client can just hide the section.
+/* Founding roster.
+ *
+ * A leaderboard with nobody on it tells a new visitor nothing, so the board
+ * ships with a few names on it. These are flagged `seeded: true` all the way
+ * to the client, which labels them - the board should look alive without
+ * passing invented results off as real play. Real players outrank them on
+ * merit as soon as battles are archived: these are merged, never given
+ * priority, and the whole block disappears once SEED_PLAYERS is emptied. */
+const SEED_PLAYERS = [
+  { name: 'Naod',  xp: 12480, tokens: 918400, wins: 34, battles: 41, avgTotal: 17.8, avgAesthetic: 4.7 },
+  { name: 'Mira',  xp: 9310,  tokens: 642100, wins: 21, battles: 38, avgTotal: 16.2, avgAesthetic: 4.4 },
+  { name: 'Dawit', xp: 7650,  tokens: 511900, wins: 15, battles: 33, avgTotal: 15.1, avgAesthetic: 4.6 },
+];
+
+/* The categories the board can be ranked by. Each is a key plus how to sort,
+ * so adding one is a single line here and the client picks it up. */
+const PLAYER_CATEGORIES = [
+  { id: 'xp',        label: 'XP',            unit: 'XP',      key: (p) => p.xp },
+  { id: 'tokens',    label: 'Tokens burned', unit: 'tokens',  key: (p) => p.tokens },
+  { id: 'wins',      label: 'Wins',          unit: 'wins',    key: (p) => p.wins },
+  { id: 'aesthetic', label: 'Most aesthetic', unit: '/5',     key: (p) => p.avgAesthetic },
+];
+
+/* Player standings, ranked every way the board offers. Real archived players
+ * are merged with the seeded roster; a real player with the same name wins,
+ * so seeding can never overwrite somebody's actual record. */
+app.get('/api/players', async (_req, res) => {
+  let real = [];
+  try {
+    if (archive.isEnabled()) real = (await archive.playerStandings()) || [];
+  } catch (err) {
+    console.error('player standings failed', err);
+  }
+
+  const byName = new Map();
+  for (const p of SEED_PLAYERS) byName.set(p.name.toLowerCase(), { ...p, seeded: true });
+  for (const p of real) byName.set(p.name.toLowerCase(), { ...p, seeded: false });
+  const players = [...byName.values()];
+
+  const boards = {};
+  for (const cat of PLAYER_CATEGORIES) {
+    boards[cat.id] = players
+      .filter((p) => cat.key(p) > 0)
+      .sort((a, b) => cat.key(b) - cat.key(a))
+      .slice(0, 25)
+      .map((p) => ({
+        name: p.name,
+        value: cat.key(p),
+        battles: p.battles,
+        wins: p.wins,
+        seeded: !!p.seeded,
+      }));
+  }
+
+  res.json({
+    categories: PLAYER_CATEGORIES.map(({ id, label, unit }) => ({ id, label, unit })),
+    boards,
+    hasRealPlayers: real.length > 0,
+  });
+});
+
 app.get('/api/stats', async (_req, res) => {
   if (!archive.isEnabled()) return res.status(503).json({ enabled: false });
   try {

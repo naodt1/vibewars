@@ -657,6 +657,135 @@ textarea[readonly] { background: var(--field-locked); color: var(--muted); }
   100% { transform: rotate(450deg) scale(1); }
 }
 
+/* -------------------------------------------------------------- quota -- */
+.quota {
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 20px 22px;
+}
+.quota-head { display: flex; align-items: baseline; gap: 10px; }
+.quota-num { font-family: var(--font-display); font-size: 40px; font-weight: 600; color: var(--accent); line-height: 1; }
+.quota-of { font-size: 15px; color: var(--muted); }
+.quota-pips { display: flex; gap: 7px; margin-top: 14px; }
+/* One pip per slot: taken reads solid, open reads as a gap waiting to be filled. */
+.quota-pip {
+  flex: 1;
+  height: 8px;
+  border-radius: var(--pill);
+  background: var(--accent);
+}
+.quota-pip.taken { background: var(--surface-3); }
+
+/* Pick a position, then enquire about that one specifically. */
+.slot-picker { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 20px; }
+.slot-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 86px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 2px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  color: var(--fg);
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, transform .12s ease;
+}
+.slot-opt:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-2px); }
+.slot-opt.selected { border-color: var(--accent); background: var(--accent-soft); }
+.slot-opt:disabled, .slot-opt.taken { cursor: not-allowed; opacity: .45; }
+.slot-opt-num { font-family: var(--font-display); font-size: 22px; font-weight: 600; line-height: 1; }
+.slot-opt.selected .slot-opt-num { color: var(--accent); }
+.slot-opt-state {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.slot-inquire { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 0 0 18px; }
+.slot-inquire-note { font-size: 13px; color: var(--faint); }
+
+/* ---------------------------------------------------------- leaderboard -- */
+.lb-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.lb-tab {
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--pill);
+  padding: 8px 16px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.lb-tab:hover { color: var(--fg); border-color: var(--accent); }
+.lb-tab.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+
+.lb-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.lb-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 13px 16px;
+}
+.lb-rank {
+  flex: 0 0 auto;
+  min-width: 26px;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--faint);
+  text-align: center;
+}
+/* Podium: gold, silver, bronze, and nothing after that. */
+.lb-row.rank-1 { border-color: var(--accent); background: var(--accent-soft); }
+.lb-row.rank-1 .lb-rank { color: #FFC24B; }
+.lb-row.rank-2 .lb-rank { color: #C6CBD2; }
+.lb-row.rank-3 .lb-rank { color: #D08A4E; }
+.lb-who { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.lb-name { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-seed, .lb-you {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: var(--pill);
+  padding: 3px 8px;
+}
+.lb-seed { background: var(--surface-3); color: var(--faint); }
+.lb-you { background: var(--accent); color: var(--on-accent); }
+.lb-meta { flex: 0 0 auto; font-size: 12px; color: var(--faint); }
+@media (max-width: 560px) { .lb-meta { display: none; } }
+.lb-value {
+  flex: 0 0 auto;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  min-width: 92px;
+  text-align: right;
+}
+.lb-unit { font-size: 11px; font-weight: 500; color: var(--faint); margin-left: 5px; }
+.lb-sub { margin: 38px 0 4px; }
+
+/* Landing page cut-down */
+.home-board { margin-bottom: 34px; }
+.home-board-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.home-board-title { font-family: var(--font-display); font-size: 22px; font-weight: 600; margin: 0; }
+.home-board .btn { margin-top: 14px; }
+
 /* ----------------------------------------------------------- progression -- */
 /* Navbar pill: level, a thin progress bar, and the streak when there is one. */
 .nav-progress {
@@ -1655,7 +1784,6 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
 }
 .sponsor-slot:hover .slot-hover, .sponsor-slot:focus-visible .slot-hover { opacity: 1; max-height: 24px; }
 .slot-cta { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; color: var(--accent); }
-.slot-price-inline { font-weight: 700; color: var(--accent); }
 
 /* ------------------------------------------------------------- main menu -- */
 /* The wordmark writ large - same two-typeface join as .logo, just scaled up. */
@@ -2104,7 +2232,7 @@ input:focus, textarea:focus, select:focus { box-shadow: 0 0 0 3px var(--accent-s
   input, textarea, select, .editor, .slot-icon, .slot-icon img, .slot-hover,
   .nav-progress, .lvl-bar-fill, .xp-bar-fill, .badge, .toast,
   .badge-art, .badge.just-earned .badge-art, .badge.just-earned::after,
-  .roll-btn, .die, .die.rolling {
+  .roll-btn, .die, .die.rolling, .slot-opt {
     animation: none !important;
     transition: none !important;
     transform: none !important;
@@ -2285,6 +2413,10 @@ section.visible { display: block; }
         <path d="M96 36 Q98 50 110 52 Q98 54 96 68 Q94 54 82 52 Q94 50 96 36Z" fill="#B2DB26"/>
       </svg>
     </div>
+
+    <!-- Top five by XP, filled by renderHomeBoard(). A div, not a section:
+         show() hides every <section> without .visible, which would swallow it. -->
+    <div id="homeBoard" class="home-board" hidden></div>
 
     <div class="marquee" aria-hidden="true">
       <div class="marquee-track">
@@ -2800,8 +2932,14 @@ section.visible { display: block; }
 </template>
 
 <template id="page-leaderboard">
-  <p class="keys-lede">Every finished battle goes on the record. This is the all-time board, by
-    declared model - the argument, settled with numbers.</p>
+  <p class="keys-lede">Every finished battle goes on the record. Rank the room four different
+    ways - the fastest learner, the biggest spender, the most wins, the best eye.</p>
+  <div class="lb-tabs" id="lbTabs"></div>
+  <div id="playerBoard"></div>
+
+  <h3 class="lb-sub">By model</h3>
+  <p class="muted" style="margin-top:0">The other argument: which model actually wins, across
+    everyone who declared it.</p>
   <div id="globalBoard"></div>
 </template>
 
@@ -2837,26 +2975,39 @@ section.visible { display: block; }
 
   <h3>Why sponsor here</h3>
   <ul class="bullets">
-    <li>A slot is on screen for the whole session, not one pageview - lobby, build, voting,
-      leaderboard.</li>
-    <li>No ad network sits between you and the page. Static markup rendered by the site itself,
-      nothing that phones home, nothing that slows the game down.</li>
-    <li>The rail sits clear of the arena, so a sponsor is always visible and never in the way of
-      play.</li>
+    <li><strong>The audience is the buyer.</strong> Everyone here writes software and is actively
+      choosing between AI providers - that is the whole premise of the game. For a developer tool,
+      an API, or anything sold to engineers, that is the room you want to be in.</li>
+    <li><strong>They are mid-decision while you are on screen.</strong> A player picks a model,
+      connects a key, spends real tokens and then watches the results get scored. Your name is up
+      during the part where they are forming an opinion about which tools are worth paying for.</li>
+    <li><strong>Attention measured in minutes, not impressions.</strong> A slot stays up for the
+      whole session - lobby, build, voting, leaderboard - rather than flashing past in a feed. A
+      round runs eight minutes before anyone has even voted.</li>
+    <li><strong>Nothing sits between you and the page.</strong> No ad network, no tracker, no
+      auction. Static markup the site renders itself, so it cannot slow the game down or follow
+      anyone around afterwards.</li>
+    <li><strong>Five slots, and only five.</strong> No rotation within the month and no crowding, so
+      you are never one of thirty logos fighting for the same corner. The rail sits clear of the
+      arena: always visible, never in the way of play.</li>
   </ul>
 
   <h3>What a slot looks like</h3>
   <p>An icon, your app's name, and a one-line description. Five slots total, one column.</p>
 
-  <h3>Booked by the month, not the click</h3>
-  <p>There are five of these, ever - not five per month, five total. A slot is held for its sponsor
-    for the calendar month and doesn't turn over until they let it go, so the board fills up and
-    then it's full. <span class="slot-price-inline">$1,500/mo</span> per slot, first come first
-    served, no long-term contract required to hold your place.</p>
-  <p><a class="btn btn-primary" href="https://github.com/naodt1/vibewars/issues" target="_blank" rel="noopener">Book this month's slot &#8599;</a></p>
-  <p class="muted">Slots are claimed by pull request against the repository, so the whole roster is
-    public and auditable. Open an issue to start a conversation.</p>
-  <p class="muted">Two of the five are the site's own projects. The other three are open.</p>
+  <h3>This month's availability</h3>
+  <!-- Counted from the live rail on open, so it can never drift out of date. -->
+  <div id="sponsorQuota" class="quota"></div>
+  <p class="muted">Five slots, booked by the calendar month. A slot is yours for the month and
+    renews only if you want it to, so the board turns over rather than locking newcomers out.</p>
+
+  <h3>Choose your slot</h3>
+  <p>Pick the position you want and send the enquiry. Rates depend on the slot and the length of
+    the booking, so they are agreed directly rather than posted.</p>
+  <div id="slotPicker" class="slot-picker"></div>
+  <p id="slotInquire" class="slot-inquire"></p>
+  <p class="muted">Slots are claimed in the open against the repository, so the whole roster is
+    public and auditable.</p>
 </template>
 
 <template id="page-about">
