@@ -5,12 +5,12 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
         xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
   <url>
-    <loc>https://vibewars.naodtadele.com/</loc>
+    <loc>https://thevibecodinggame.com/</loc>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
     <image:image>
-      <image:loc>https://vibewars.naodtadele.com/og-image.png</image:loc>
-      <image:title>vibewars: multiplayer vibe coding battles with AI models</image:title>
+      <image:loc>https://thevibecodinggame.com/og-image.png</image:loc>
+      <image:title>vibewars: the first multiplayer vibe coding game</image:title>
     </image:image>
   </url>
 </urlset>

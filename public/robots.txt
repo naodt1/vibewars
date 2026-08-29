@@ -5,4 +5,4 @@ Allow: /
 # so there is nothing here to keep a crawler out of. The API is not content.
 Disallow: /api/
 
-Sitemap: https://vibewars.naodtadele.com/sitemap.xml
+Sitemap: https://thevibecodinggame.com/sitemap.xml
