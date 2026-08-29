@@ -424,6 +424,25 @@ a { color: inherit; }
 .btn-secondary:hover { background: linear-gradient(180deg, var(--surface-3) 0%, var(--surface-2) 100%); }
 .btn-lg { font-size: 15px; padding: 14px 28px; }
 .btn-block { width: 100%; }
+/* The gloss above is a rounded bar sized in percentages, so its shape follows
+   the button's aspect ratio. That reads as a highlight on a pill, but stretched
+   across a full-width button it becomes a long floating capsule sitting in mid
+   air. Block buttons drop it and lean on the inset top edge instead, which is
+   width-independent by construction. */
+.btn-block::before { display: none; }
+.btn-block {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 2px 0 rgba(0, 0, 0, 0.28),
+    0 3px 6px rgba(0, 0, 0, 0.16);
+}
+.btn-block.btn-primary {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 2px 0 var(--accent-deep),
+    0 3px 8px rgba(0, 0, 0, 0.18);
+}
+:root[data-theme="light"] .btn-block { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 2px 0 rgba(23, 23, 26, 0.14), 0 3px 6px rgba(23, 23, 26, 0.08); }
 
 .field { display: block; margin-bottom: 18px; }
 .field-label {
@@ -794,6 +813,22 @@ textarea[readonly] { background: var(--field-locked); color: var(--muted); }
 .home-board-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .home-board-title { font-family: var(--font-display); font-size: 22px; font-weight: 600; margin: 0; }
 .home-board .btn { margin-top: 14px; }
+/* The category picker reads as part of the sentence "by <category>", so it is
+   styled down to inline text rather than looking like a form control. */
+.home-board-by { display: inline-flex; align-items: baseline; gap: 6px; font-size: 14px; color: var(--muted); }
+.home-board-by select {
+  width: auto;
+  padding: 4px 26px 4px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+  cursor: pointer;
+}
+.home-board-by select:hover { border-color: var(--accent); }
 
 /* ----------------------------------------------------------- progression -- */
 /* Navbar pill: level, a thin progress bar, and the streak when there is one. */

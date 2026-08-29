@@ -2795,22 +2795,54 @@ async function renderPlayerBoard() {
 }
 
 /** The landing page's top five, with a way through to the whole thing. */
+let homeCategory = 'xp'; // which ranking the landing page is showing
+
 async function renderHomeBoard() {
   const host = $('homeBoard');
   if (!host) return;
   const data = await loadPlayers();
-  if (!data || !data.boards.xp || !data.boards.xp.length) {
+  if (!data || !data.boards || !data.categories) {
     host.hidden = true;
     return;
   }
+  // Fall back to the first category that actually has anyone in it, so
+  // switching to an empty board never leaves the panel looking broken.
+  const cat =
+    data.categories.find((c) => c.id === homeCategory) || data.categories[0];
+  const rows = data.boards[cat.id] || [];
+  if (!rows.length && !data.categories.some((c) => (data.boards[c.id] || []).length)) {
+    host.hidden = true;
+    return;
+  }
+
   host.hidden = false;
   host.innerHTML =
     '<div class="home-board-head">' +
       '<h2 class="home-board-title">&#127942; Top players</h2>' +
-      '<span class="muted">by XP</span>' +
+      '<label class="home-board-by">by ' +
+        '<select id="homeBoardCat" aria-label="Rank players by">' +
+        data.categories
+          .map(
+            (c) =>
+              `<option value="${c.id}"${c.id === cat.id ? ' selected' : ''}>${esc(c.label)}</option>`
+          )
+          .join('') +
+        '</select>' +
+      '</label>' +
     '</div>' +
-    playerTable(data.boards.xp, 'XP', 5) +
+    playerTable(rows, cat.unit, 5) +
     '<button class="btn btn-block" data-page="leaderboard">Full leaderboard &#8594;</button>';
+
+  const sel = $('homeBoardCat');
+  if (sel) {
+    sel.onchange = () => {
+      homeCategory = sel.value;
+      // Keep the full leaderboard on the same category, so opening it from
+      // here does not silently switch what you were looking at.
+      lbCategory = homeCategory;
+      renderHomeBoard();
+    };
+  }
   host.querySelectorAll('[data-page]').forEach((el) => {
     el.onclick = () => openPage(el.dataset.page);
   });
