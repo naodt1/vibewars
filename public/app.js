@@ -1426,7 +1426,7 @@ function renderPromptCard(el, lobby) {
   el.innerHTML =
     '<span class="prompt-tag">Challenge</span>' +
     '<div class="prompt-meta">' +
-    `<span class="chip chip-secondary">${esc(p.topic)}</span>` +
+    `<span class="chip chip-secondary">${esc(topicLabel(p.topic))}</span>` +
     `<span class="chip chip-muted">${esc(p.challenge)}</span>` +
     `<span class="chip">${lobby.durationMinutes} min</span>` +
     '</div>' +
@@ -1987,8 +1987,41 @@ function ensureIdentity() {
       (crypto.randomUUID && crypto.randomUUID()) ||
       String(Date.now()) + Math.random().toString(36).slice(2),
     nickname: generateNickname(),
+    // Unconfirmed until the player passes the gate. A name is generated up
+    // front so the gate has something to show, but it is not "theirs" until
+    // they accept or replace it.
+    named: false,
   };
   saveIdentity(identity);
+}
+
+/* The gate: asked once on arrival, never again. Anyone who set a name before
+ * this existed is treated as already through it, so an existing player is not
+ * suddenly stopped on a screen they have never seen. */
+function needsName() {
+  return !identity || identity.named === false;  // undefined => pre-existing player, let through
+}
+
+function showNameGate() {
+  const input = $('gateName');
+  if (input) input.value = identity ? identity.nickname : generateNickname();
+  show('nameGate');
+  setPageBack(null, null);
+  if (input) setTimeout(() => input.focus(), 60);
+}
+
+function passNameGate() {
+  const input = $('gateName');
+  const chosen = String((input && input.value) || '').trim().slice(0, 20);
+  if (!chosen) {
+    // Nothing typed is not an error worth blocking on: fall back to the
+    // generated name rather than refusing to let anyone in.
+    saveIdentity({ ...identity, nickname: generateNickname(), named: true });
+  } else {
+    saveIdentity({ ...identity, nickname: chosen, named: true });
+  }
+  show('entry');
+  showChoice();
 }
 
 function setNickname(name) {
@@ -2420,25 +2453,62 @@ function untilText(ms) {
   return `${m}m left`;
 }
 
+/* Topic keys are shouty internal names, and one of them is literally
+ * "CONSTRAINTS", which on a card reads like a heading for a list that is not
+ * there. These are what a player should actually see. */
+const TOPIC_LABELS = {
+  EASY: 'Fake products',
+  CONSTRAINTS: 'Creative limits',
+  CHAOS: 'Chaos',
+  GAMES: 'Games',
+};
+const topicLabel = (t) => TOPIC_LABELS[t] || t;
+
+/* Badge art for the two rotating challenges: a sun for the daily, a rosette
+ * for the weekly. Drawn rather than emoji so they sit at a fixed size and
+ * take the theme like the rest of the artwork. */
+const CHALLENGE_ART = {
+  daily:
+    '<circle cx="32" cy="32" r="12" class="ca-fill"/>' +
+    '<path d="M32 6v8M32 50v8M6 32h8M50 32h8M13 13l6 6M45 45l6 6M51 13l-6 6M19 45l-6 6" class="ca-stroke"/>',
+  weekly:
+    '<circle cx="32" cy="26" r="15" class="ca-fill"/>' +
+    '<path d="M32 18l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z" class="ca-punch"/>' +
+    '<path d="M23 39l-5 19 14-7 14 7-5-19" class="ca-stroke"/>',
+};
+
+function challengeArt(kind) {
+  return (
+    `<svg class="challenge-art ${kind}" viewBox="0 0 64 64" fill="none" ` +
+    'xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+    (CHALLENGE_ART[kind] || '') +
+    '</svg>'
+  );
+}
+
 function renderChallengeCards() {
   const host = $('challengeCards');
+  const section = $('challengeSection');
   if (!host) return;
   const now = Date.now();
   const cards = [
-    { kind: 'daily', label: 'Daily challenge', icon: '&#9728;', c: challengeState.daily,
+    { kind: 'daily', label: 'Daily', c: challengeState.daily,
       done: challengeState.daily && progress.dailyDone === challengeState.daily.periodKey },
-    { kind: 'weekly', label: 'Weekly challenge', icon: '&#127775;', c: challengeState.weekly,
+    { kind: 'weekly', label: 'Weekly', c: challengeState.weekly,
       done: challengeState.weekly && progress.weeklyDone === challengeState.weekly.periodKey },
   ].filter((x) => x.c);
 
-  if (!cards.length) { host.hidden = true; return; }
-  host.hidden = false;
+  if (!cards.length) {
+    if (section) section.hidden = true;
+    return;
+  }
+  if (section) section.hidden = false;
   host.innerHTML = cards
     .map(
       (x) =>
-        `<div class="challenge-card${x.done ? ' done' : ''}">` +
+        `<div class="challenge-card ${x.kind}${x.done ? ' done' : ''}">` +
         '<div class="challenge-top">' +
-          `<span class="challenge-kind">${x.icon} ${x.label}</span>` +
+          `<span class="challenge-kind">${challengeArt(x.kind)}${esc(x.label)}</span>` +
           (x.done
             ? '<span class="chip chip-accent">&#10003; Done</span>'
             : `<span class="challenge-timer">${untilText(x.c.expiresAt - now)}</span>`) +
@@ -2446,8 +2516,8 @@ function renderChallengeCards() {
         `<p class="challenge-name">${esc(x.c.productName)}</p>` +
         `<p class="challenge-task">${esc(x.c.task)}</p>` +
         '<div class="challenge-foot">' +
-          `<span class="chip chip-muted">${esc(x.c.topic)}</span>` +
-          `<button class="btn btn-primary" data-challenge="${x.kind}">Play it &#8599;</button>` +
+          `<span class="chip chip-muted">${esc(topicLabel(x.c.topic))}</span>` +
+          `<button class="btn btn-primary" data-challenge="${x.kind}">Play &#8599;</button>` +
         '</div></div>'
     )
     .join('');
@@ -3374,6 +3444,12 @@ document.querySelectorAll('.tab').forEach((tab) => {
   };
 });
 
+$('gateEnter').onclick = passNameGate;
+$('gateReroll').onclick = () => { $('gateName').value = generateNickname(); $('gateName').focus(); };
+$('gateName').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); passNameGate(); }
+});
+
 $('menuPlay').onclick = showPlay;
 $('menuWatch').onclick = showWatch;
 $('refreshMatches').onclick = () => loadMatches(true);
@@ -3639,6 +3715,8 @@ progress = loadProgress();
 renderProgressChip();
 loadChallenges();
 renderHomeBoard();
+// The gate stands in front of the landing page on a first visit.
+if (needsName()) showNameGate();
 // The landing screen is what the markup already shows, but nothing has run
 // show()/showChoice() yet to match the chrome to it.
 syncNavChrome();
