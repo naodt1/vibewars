@@ -1253,6 +1253,9 @@ function syncNavChrome() {
   const landing =
     $('entry').classList.contains('visible') && !$('entryChoice').hidden;
   document.body.classList.toggle('bare-nav', landing);
+  // On the gate the navbar has nowhere useful to go, so it is hidden outright
+  // rather than offering links into a game you have not entered yet.
+  document.body.classList.toggle('at-gate', $('nameGate').classList.contains('visible'));
 }
 
 /* The one "back" control in the app. Every screen that has somewhere to
@@ -2022,6 +2025,7 @@ function passNameGate() {
   }
   show('entry');
   showChoice();
+  renderProgressChip();   // there is a player now, so the chip can appear
 }
 
 function setNickname(name) {
@@ -2348,6 +2352,9 @@ function badgeSvg(badge, size = 64) {
 function renderProgressChip() {
   const host = $('navProgress');
   if (!host) return;
+  // Nothing to show before the gate: there is no player yet, and a level chip
+  // on the way in implies progress somebody has not made.
+  if (needsName()) { host.hidden = true; return; }
   const { level, pct } = levelInfo();
   const streak = progress.streak;
   host.innerHTML =
@@ -2668,7 +2675,7 @@ const PAGES = {
     onOpen: () => renderGuide(),
   },
   scoring: { title: 'Scoring', template: 'page-scoring' },
-  profile: { title: 'Your progress', template: 'page-profile', onOpen: () => renderProfile() },
+  profile: { title: 'Your progress', template: 'page-profile', onOpen: () => renderProfile(), needsPlayer: true },
   leaderboard: {
     title: 'Leaderboard',
     template: 'page-leaderboard',
@@ -3073,6 +3080,8 @@ function rememberView() {
 function openPage(key) {
   const page = PAGES[key];
   if (!page) return;
+  // Personal pages need a player. Without one, ask who they are first.
+  if (page.needsPlayer && needsName()) return showNameGate();
   if (!onInfoPage) rememberView(); // switching between info pages keeps the original return point
   onInfoPage = true;
   $('infoPageTitle').textContent = page.title;
@@ -3107,8 +3116,6 @@ window.addEventListener('popstate', () => {
   if (PAGES[key]) openPage(key);
   else if (document.querySelector('section.visible')?.id === 'infoPage') closePage();
 });
-// A cold load of /#scoring should land on that page, not just the front screen.
-if (PAGES[location.hash.slice(1)]) openPage(location.hash.slice(1));
 
 /* -------------------------------------------------------------- theming -- */
 
@@ -3716,7 +3723,16 @@ renderProgressChip();
 loadChallenges();
 renderHomeBoard();
 // The gate stands in front of the landing page on a first visit.
-if (needsName()) showNameGate();
+if (needsName()) {
+  showNameGate();
+} else {
+  // A cold load of /#scoring should land on that page, not the front screen.
+  // This has to run after ensureIdentity(): it used to sit at module scope,
+  // where identity was still null, so a deep link to a page that needs a
+  // player bounced every returning visitor to the gate.
+  const key = location.hash.slice(1);
+  if (PAGES[key]) openPage(key);
+}
 // The landing screen is what the markup already shows, but nothing has run
 // show()/showChoice() yet to match the chrome to it.
 syncNavChrome();

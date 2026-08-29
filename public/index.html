@@ -245,6 +245,10 @@ a { color: inherit; }
    See syncNavChrome() in app.js for when this is applied. */
 .bare-nav .navbar { border-bottom-color: transparent; }
 .bare-nav .navbar .logo { visibility: hidden; }
+/* The gate hides the navbar entirely. It is a one-decision screen, and links
+   into a game nobody has entered yet are just ways to get lost. */
+.at-gate .navbar, .at-gate .site-footer { display: none; }
+.at-gate .grain { opacity: .02; }
 /* Same max-width column as .wrap and .footer-inner, so the logo and the
    theme toggle line up with the hero content below rather than the raw
    viewport edge. */
