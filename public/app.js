@@ -885,8 +885,8 @@ function modelIdFor(label) {
    it, so connecting a key always turns a declared pick into a working one.
    Coding agents/IDEs and open-weight/local models were dropped - nothing in
    the sandbox could ever call them, so listing them just set up a dead end
-   where "no key needed" became the only option. Anyone actually using one of
-   those can still type it into "Something else" and paste HTML by hand. */
+   where "no key needed" became the only option. Anyone using one of those can
+   still play: paste the HTML straight into the editor. */
 /* Fallback catalogue: what to offer someone who has not connected a key.
  *
  * Deliberately short and current. This list is only ever a stand-in - the
@@ -1112,23 +1112,10 @@ function setupToolPicker(mountId, hiddenInputId) {
     panel.appendChild(wrap);
   }
 
-  // Free-text escape hatch for anything not in the list.
-  const other = document.createElement('div');
-  other.className = 'picker-group';
-  other.innerHTML =
-    '<div class="picker-group-head" style="cursor:default"><span>Something else</span></div>' +
-    '<div class="picker-other"><input type="text" placeholder="e.g. Claude Code + Opus 5" />' +
-    '<button type="button" class="btn">Use</button></div>';
-  const otherInput = other.querySelector('input');
-  const otherBtn = other.querySelector('button');
-  otherBtn.onclick = () => {
-    const v = otherInput.value.trim();
-    if (v) setValue(v);
-  };
-  otherInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); otherBtn.click(); }
-  });
-  panel.appendChild(other);
+  /* No free-text option. It let anyone declare a model the sandbox has no way
+     to call, which is the opposite of only offering what actually works: the
+     groups above are either verified against a connected key or drawn from the
+     current catalogue. */
 
   trigger.onclick = () => {
     const open = panel.hidden;
