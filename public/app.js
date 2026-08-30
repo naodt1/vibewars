@@ -407,6 +407,8 @@ fetch('/api/config')
     // The fetch can land after the player is already looking at the key step
     // or the sandbox, so repaint whichever of those is on screen.
     if (wizFlow) renderWizard();
+    // Rebuild pickers so provider logos appear once we know which exist.
+    rebuildPickers();
     if (state && !state.spectating) renderSandboxControls();
   })
   .catch(() => {}); // no house key info: everyone just needs their own key, as before
@@ -885,22 +887,30 @@ function modelIdFor(label) {
    the sandbox could ever call them, so listing them just set up a dead end
    where "no key needed" became the only option. Anyone actually using one of
    those can still type it into "Something else" and paste HTML by hand. */
+/* Fallback catalogue: what to offer someone who has not connected a key.
+ *
+ * Deliberately short and current. This list is only ever a stand-in - the
+ * moment a key is connected the picker replaces the matching group with the
+ * real models that key can actually reach, straight from the provider's own
+ * /models endpoint, so nobody is offered something their account cannot call.
+ * Anthropic's entries are verified against the current model line; the other
+ * three move fast, so trim them when a vendor retires something. */
 const TOOL_GROUPS = [
   {
     name: 'ChatGPT / OpenAI',
-    models: ['GPT-5.6 Sol', 'GPT-5.6 Terra', 'GPT-5.6 Luna', 'GPT-5.5', 'GPT-5.1'],
+    models: ['GPT-5.6', 'GPT-5.5', 'GPT-5.1'],
   },
   {
     name: 'Claude / Anthropic',
-    models: ['Claude Fable 5', 'Claude Opus 5', 'Claude Sonnet 5', 'Claude Haiku 4.5', 'Claude Opus 4.8'],
+    models: ['Claude Opus 5', 'Claude Sonnet 5', 'Claude Haiku 4.5'],
   },
   {
     name: 'Gemini / Google',
-    models: ['Gemini 3.6 Flash', 'Gemini 3.5 Pro', 'Gemini 3.5 Flash', 'Gemini 3 Pro'],
+    models: ['Gemini 3.5 Pro', 'Gemini 3.5 Flash', 'Gemini 3 Pro'],
   },
   {
     name: 'Grok / xAI',
-    models: ['Grok 4.5', 'Grok 4', 'Grok 4 Fast'],
+    models: ['Grok 4.5', 'Grok 4'],
   },
 ];
 
@@ -980,15 +990,14 @@ function providerIdForGroup(name) {
 function providerIcon(id) {
   if (!id) return '';
   const fb = PROVIDER_FALLBACK[id] || { letter: '?', tint: 'var(--muted)' };
-  // The <img> tries the real logo; if it is not there, onerror swaps in the
-  // monogram rather than leaving a broken-image glyph in the menu.
-  return (
-    '<span class="prov-icon">' +
-    `<img src="/provider-logos/${id}.svg" alt="" width="20" height="20" ` +
-    `onerror="this.replaceWith(Object.assign(document.createElement('span'),` +
-    `{className:'prov-mono',textContent:'${fb.letter}',style:'color:${fb.tint}'}))" />` +
-    '</span>'
-  );
+  // Only request a logo the server has told us exists. Asking optimistically
+  // and catching onerror worked, but every missing file still logged a 404 in
+  // the console, which is noise nobody should have to learn to ignore.
+  const have = (houseConfig.providerLogos || []).includes(id);
+  const inner = have
+    ? `<img src="/provider-logos/${id}.svg" alt="" width="20" height="20" />`
+    : `<span class="prov-mono" style="color:${fb.tint}">${fb.letter}</span>`;
+  return `<span class="prov-icon">${inner}</span>`;
 }
 
 const pickerMounts = [];
@@ -2457,10 +2466,35 @@ function renderProfile() {
       }).join('') +
     '</div>' +
 
+    // Keys live with the identity, so the account page says what is connected
+    // and links to where they are managed. The key itself is never shown.
+    '<h3>Connected keys</h3>' +
+    (() => {
+      const keys = readStore(KEYS_STORE);
+      const connected = Object.keys(PROVIDERS).filter((id) => keys[id]);
+      if (!connected.length) {
+        return '<p class="muted">No key connected. You can still play on the house key ' +
+          'where this instance funds one, or paste HTML by hand. ' +
+          '<button type="button" class="link-btn" data-open-keys>Add a key</button></p>';
+      }
+      return '<div class="token-split">' +
+        connected.map((id) =>
+          '<div class="token-row"><span>' + esc(PROVIDERS[id].label) + '</span>' +
+          '<strong class="verified-tick">connected</strong></div>'
+        ).join('') +
+        '</div>' +
+        '<p class="muted">Stored in this browser only, never sent to the server. ' +
+        '<button type="button" class="link-btn" data-open-keys>Manage keys</button></p>';
+    })() +
+
     '<h3>Starting over</h3>' +
     '<p class="muted">Progress lives in this browser only - no account holds it, so clearing site ' +
     'data clears this too.</p>' +
     '<p><button class="btn" id="resetProgress" type="button">Reset my progress</button></p>';
+
+  host.querySelectorAll('[data-open-keys]').forEach((b) => {
+    b.onclick = () => openPage('keys');
+  });
 
   const reset = $('resetProgress');
   if (reset) {
@@ -3243,7 +3277,24 @@ const FLOWS = {
 let wizFlow = null;
 let wizIndex = 0;
 
-const wizSteps = () => [...document.querySelectorAll(`.wiz-step[data-flow="${wizFlow}"]`)];
+/* Steps for the current flow, minus anything already answered for good.
+ *
+ * A connected key belongs to the player, not to one run: it is stored against
+ * this browser like the nickname is, so asking for it again at the top of
+ * every round is the same friction the name gate removed. Once any provider
+ * key exists, the key step drops out of the wizard entirely and the whole
+ * thing is managed from the API keys page instead. */
+const wizSteps = () =>
+  [...document.querySelectorAll(`.wiz-step[data-flow="${wizFlow}"]`)].filter((el) => {
+    if (el.dataset.keystep && hasAnyKey()) return false;
+    return true;
+  });
+
+/** True once this browser has at least one provider key connected. */
+function hasAnyKey() {
+  const keys = readStore(KEYS_STORE);
+  return Object.values(keys).some((k) => typeof k === 'string' && k.trim());
+}
 
 function showChoice() {
   wizFlow = null;

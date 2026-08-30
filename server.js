@@ -3,6 +3,7 @@
  * Single-process, in-memory demo server. State is lost on restart, by design.
  */
 
+const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
@@ -1322,10 +1323,24 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Which providers this instance can front with its own key, and the room
 // left in the shared budget - lets the client know before anyone tries to
 // prompt, rather than finding out on the first failed call.
+/* Which provider logos are actually on disk. Read once at boot: the client
+ * uses this to decide whether to request a logo at all, instead of firing a
+ * request that 404s and letting an onerror handler clean up after it. */
+const PROVIDER_LOGOS = (() => {
+  try {
+    return fs
+      .readdirSync(path.join(__dirname, 'public', 'provider-logos'))
+      .filter((f) => f.toLowerCase().endsWith('.svg'))
+      .map((f) => f.replace(/\.svg$/i, ''));
+  } catch (e) {
+    return []; // folder missing entirely: every provider falls back to a monogram
+  }
+})();
+
 app.get('/api/config', (_req, res) => {
   const house = {};
   for (const id of Object.keys(HOUSE_PROVIDERS)) house[id] = houseEnabled(id);
-  res.json({ house, houseCallsPerRound: HOUSE_CALLS_PER_ROUND });
+  res.json({ house, houseCallsPerRound: HOUSE_CALLS_PER_ROUND, providerLogos: PROVIDER_LOGOS });
 });
 
 /* Today's and this week's brief. Derived from the clock on every request, so
