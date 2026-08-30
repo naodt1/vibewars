@@ -955,6 +955,42 @@ function providerForTool(label) {
   return hit ? hit[0] : null;
 }
 
+/* ------------------------------------------------------- provider icons -- *
+ * Provider marks are the vendors' trademarks, so they are not committed here.
+ * Instead each provider gets a slot: drop the official SVG at
+ *   public/provider-logos/<id>.svg      (openai, anthropic, google, xai)
+ * and it is picked up automatically. See the README in that folder for where
+ * each vendor publishes their brand assets.
+ *
+ * Until a file exists the neutral monogram below is used, so the picker looks
+ * finished either way and nothing 404s in the console. */
+const PROVIDER_FALLBACK = {
+  openai:    { letter: 'AI', tint: '#10A37F' },
+  anthropic: { letter: 'C',  tint: '#D97757' },
+  google:    { letter: 'G',  tint: '#4285F4' },
+  xai:       { letter: 'X',  tint: '#E5E5E5' },
+};
+
+/** Which provider a picker group belongs to, for its icon. */
+function providerIdForGroup(name) {
+  const hit = Object.entries(PROVIDERS).find(([, p]) => p.label === name);
+  return hit ? hit[0] : null;
+}
+
+function providerIcon(id) {
+  if (!id) return '';
+  const fb = PROVIDER_FALLBACK[id] || { letter: '?', tint: 'var(--muted)' };
+  // The <img> tries the real logo; if it is not there, onerror swaps in the
+  // monogram rather than leaving a broken-image glyph in the menu.
+  return (
+    '<span class="prov-icon">' +
+    `<img src="/provider-logos/${id}.svg" alt="" width="20" height="20" ` +
+    `onerror="this.replaceWith(Object.assign(document.createElement('span'),` +
+    `{className:'prov-mono',textContent:'${fb.letter}',style:'color:${fb.tint}'}))" />` +
+    '</span>'
+  );
+}
+
 const pickerMounts = [];
 
 /** Rebuild every picker in place, keeping any selection that is still offered. */
@@ -1032,7 +1068,8 @@ function setupToolPicker(mountId, hiddenInputId) {
     head.className = 'picker-group-head';
     head.setAttribute('aria-expanded', 'false');
     head.innerHTML =
-      `<span>${esc(group.name)}` +
+      `<span class="picker-group-name">${providerIcon(providerIdForGroup(group.name))}` +
+      `<span>${esc(group.name)}</span>` +
       (group.verified ? ' <span class="verified-tick" title="Verified with your key">✓</span>' : '') +
       `</span><span class="picker-caret">▶</span>`;
 
@@ -3456,6 +3493,17 @@ $('gateReroll').onclick = () => { $('gateName').value = generateNickname(); $('g
 $('gateName').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); passNameGate(); }
 });
+
+/* The wordmark is the way home from anywhere, which is what people already
+ * expect it to be. Leaving a lobby is a real action with consequences for
+ * other players, so a mid-battle click confirms through the same path the
+ * Leave button uses rather than silently dropping the seat. */
+$('brandHome').onclick = () => {
+  if (onInfoPage) closePage();
+  if (state) { leaveCurrent(); return; }
+  show('entry');
+  showChoice();
+};
 
 $('menuPlay').onclick = showPlay;
 $('menuWatch').onclick = showWatch;

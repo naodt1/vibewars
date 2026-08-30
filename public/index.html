@@ -546,6 +546,22 @@ textarea[readonly] { background: var(--field-locked); color: var(--muted); }
   color: var(--fg);
 }
 .picker-group-head:hover { background: var(--surface-3); }
+/* Provider icon slot. Sized so an official logo and the monogram fallback
+   occupy exactly the same box, and the menu does not reflow when one is added. */
+.picker-group-name { display: inline-flex; align-items: center; gap: 10px; }
+.prov-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.prov-icon img { width: 20px; height: 20px; object-fit: contain; display: block; }
+.prov-mono { font-size: 11px; font-weight: 800; letter-spacing: -0.02em; }
 .picker-group-head[aria-expanded="true"] { color: var(--accent); }
 .picker-models { background: var(--surface); }
 .picker-model {
@@ -1875,12 +1891,19 @@ td.total { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
 .gate-card {
   width: 100%;
   max-width: 460px;
+  overflow: hidden;
   background: var(--surface-2);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   padding: 34px;
 }
-.gate-title { font-size: clamp(44px, 7vw, 64px); margin: 0 0 26px; }
+/* Sized for the card, not the hero. The shared .game-title clamp tops out at
+   64px, which overflows a 460px card, so this caps well under the ~390px of
+   content width and clips nothing. */
+/* Scoped to the gate so it beats .game-title, which is defined later in the
+   sheet and would otherwise win on source order at equal specificity and
+   force the hero-sized clamp into a 460px card. */
+#nameGate .gate-title { font-size: clamp(30px, 7vw, 42px); margin: 0 0 24px; max-width: 100%; }
 .gate-row { display: flex; gap: 10px; margin-bottom: 18px; }
 .gate-row input { flex: 1; }
 .gate-row .btn { flex: 0 0 auto; }
@@ -2291,8 +2314,63 @@ input:focus, textarea:focus, select:focus { box-shadow: 0 0 0 3px var(--accent-s
 .logo { transition: transform .25s cubic-bezier(.2, 1.1, .5, 1); }
 .navbar .logo:hover { transform: scale(1.04) rotate(-1.5deg); }
 
+/* Brand-as-home: it is a button now, so strip the button chrome back to text
+   and give it a little spring on hover so it reads as clickable. */
+.logo-home {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  transform-origin: left center;
+}
+.logo-home:hover { transform: scale(1.05) rotate(-1.5deg); }
+.logo-home:active { transform: scale(.98); transition-duration: .06s; }
+.logo-home:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 6px; }
+
 /* ----------------------------------------------------------------- motion -- */
 @keyframes rise-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+/* A single overshoot curve, so everything that springs springs the same way.
+   This is the CSS equivalent of the spring transitions a motion library would
+   give you, without pulling in React and a build step to get them. */
+@keyframes spring-in {
+  0%   { opacity: 0; transform: translateY(14px) scale(.97); }
+  60%  { opacity: 1; transform: translateY(-3px) scale(1.008); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes gate-in {
+  0%   { opacity: 0; transform: translateY(22px) scale(.96); }
+  70%  { opacity: 1; transform: translateY(-4px) scale(1.006); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+/* The gate is the first thing anyone sees, so it gets the fullest entrance. */
+.gate-card { animation: gate-in .5s cubic-bezier(.22, 1, .36, 1) backwards; }
+.gate-card .wiz-label,
+.gate-card .wiz-hint,
+.gate-card .gate-row,
+.gate-card .btn-block,
+.gate-card .gate-note { animation: rise-in .42s ease backwards; }
+.gate-card .wiz-label { animation-delay: .10s; }
+.gate-card .wiz-hint  { animation-delay: .15s; }
+.gate-card .gate-row  { animation-delay: .20s; }
+.gate-card .btn-block { animation-delay: .26s; }
+.gate-card .gate-note { animation-delay: .32s; }
+
+/* Cards arrive in sequence rather than all at once, which reads as the page
+   assembling itself instead of flashing into place. */
+.play-section { animation: spring-in .44s cubic-bezier(.22, 1, .36, 1) backwards; }
+.play-section:nth-of-type(2) { animation-delay: .07s; }
+.challenge-card { animation: spring-in .46s cubic-bezier(.22, 1, .36, 1) backwards; }
+.challenge-card:nth-child(2) { animation-delay: .08s; }
+.choice { animation: spring-in .46s cubic-bezier(.22, 1, .36, 1) backwards; }
+.choice:nth-child(2) { animation-delay: .08s; }
+.lb-row { animation: rise-in .4s ease backwards; }
+.lb-row:nth-child(1) { animation-delay: .03s; }
+.lb-row:nth-child(2) { animation-delay: .07s; }
+.lb-row:nth-child(3) { animation-delay: .11s; }
+.lb-row:nth-child(4) { animation-delay: .15s; }
+.lb-row:nth-child(5) { animation-delay: .19s; }
+.badge { animation: spring-in .4s cubic-bezier(.22, 1, .36, 1) backwards; }
 @keyframes step-in { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: translateX(0); } }
 @keyframes winner-pop { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes pulse-urgent { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
@@ -2335,7 +2413,8 @@ input:focus, textarea:focus, select:focus { box-shadow: 0 0 0 3px var(--accent-s
   input, textarea, select, .editor, .slot-icon, .slot-icon img, .slot-hover,
   .nav-progress, .lvl-bar-fill, .xp-bar-fill, .badge, .toast,
   .badge-art, .badge.just-earned .badge-art, .badge.just-earned::after,
-  .roll-btn, .die, .die.rolling, .slot-opt {
+  .roll-btn, .die, .die.rolling, .slot-opt,
+  .logo-home, .gate-card, .gate-card > *, .play-section, .lb-row {
     animation: none !important;
     transition: none !important;
     transform: none !important;
@@ -2432,7 +2511,7 @@ section.visible { display: block; }
 
 <nav class="navbar">
   <div class="nav-inner">
-    <div class="logo"><span class="logo-vibe">vibe</span><span class="logo-wars">wars</span></div>
+    <button type="button" class="logo logo-home" id="brandHome" aria-label="vibewars home"><span class="logo-vibe">vibe</span><span class="logo-wars">wars</span></button>
     <div class="nav-links">
       <button class="nav-link" data-page="how">How to play</button>
       <button class="nav-link" data-page="scoring">Scoring</button>
