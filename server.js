@@ -1328,12 +1328,16 @@ app.use(express.static(path.join(__dirname, 'public')));
  * request that 404s and letting an onerror handler clean up after it. */
 const PROVIDER_LOGOS = (() => {
   try {
-    return fs
-      .readdirSync(path.join(__dirname, 'public', 'provider-logos'))
-      .filter((f) => f.toLowerCase().endsWith('.svg'))
-      .map((f) => f.replace(/\.svg$/i, ''));
+    // Report the whole filename, not just the id, so any supported format
+    // works - whatever the vendor publishes is what gets dropped in.
+    const out = {};
+    for (const f of fs.readdirSync(path.join(__dirname, 'public', 'provider-logos'))) {
+      const m = /^(.+)\.(svg|png|webp)$/i.exec(f);
+      if (m) out[m[1].toLowerCase()] = f;
+    }
+    return out;
   } catch (e) {
-    return []; // folder missing entirely: every provider falls back to a monogram
+    return {}; // folder missing entirely: every provider falls back to a monogram
   }
 })();
 

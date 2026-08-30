@@ -21,4 +21,6 @@ vendor's brand guidelines set the rules on clear space, recolouring and
 minimum size — read the page above before shipping. Do not restyle a mark to
 match the site theme; use it as published.
 
-Square, viewBox-based SVGs work best. They render at 20x20 in the picker.
+SVG is preferred, but `.png` and `.webp` also work - the server reports whatever
+filename it finds and the picker uses it. Square artwork works best; it renders
+at 20x20 in the picker.

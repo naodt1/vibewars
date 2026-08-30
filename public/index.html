@@ -3245,5 +3245,24 @@ section.visible { display: block; }
 </template>
 
 <script src="app.js"></script>
+
+<!-- Vercel Web Analytics.
+     Vercel serves this path itself once Web Analytics is enabled for the
+     project (Project -> Analytics -> Enable), so there is nothing to install
+     and no key to configure. Injected rather than hardcoded as a <script src>
+     so it is skipped on localhost: the file only exists in production, and a
+     plain tag would 404 on every local page load. It is cookieless and
+     collects page views, not people, which is why it fits a site that makes a
+     point of having no accounts. -->
+<script>
+  (function () {
+    var local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+    if (local) return;
+    var s = document.createElement('script');
+    s.defer = true;
+    s.src = '/_vercel/insights/script.js';
+    document.head.appendChild(s);
+  })();
+</script>
 </body>
 </html>

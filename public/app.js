@@ -993,9 +993,9 @@ function providerIcon(id) {
   // Only request a logo the server has told us exists. Asking optimistically
   // and catching onerror worked, but every missing file still logged a 404 in
   // the console, which is noise nobody should have to learn to ignore.
-  const have = (houseConfig.providerLogos || []).includes(id);
-  const inner = have
-    ? `<img src="/provider-logos/${id}.svg" alt="" width="20" height="20" />`
+  const file = (houseConfig.providerLogos || {})[id];
+  const inner = file
+    ? `<img src="/provider-logos/${encodeURIComponent(file)}" alt="" width="20" height="20" />`
     : `<span class="prov-mono" style="color:${fb.tint}">${fb.letter}</span>`;
   return `<span class="prov-icon">${inner}</span>`;
 }
