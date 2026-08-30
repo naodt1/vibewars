@@ -557,10 +557,15 @@ textarea[readonly] { background: var(--field-locked); color: var(--muted); }
   height: 22px;
   flex: 0 0 auto;
   border-radius: 6px;
-  background: var(--surface-3);
+  /* White in both themes. Vendor marks are drawn for light backgrounds and two
+     of the four are solid black, so the theme surface would swallow them in
+     dark mode. A white tile also stops us restyling anyone's logo, which their
+     brand guidelines forbid. The monogram fallback keeps the theme surface. */
+  background: #fff;
   overflow: hidden;
 }
-.prov-icon img { width: 20px; height: 20px; object-fit: contain; display: block; }
+.prov-icon:has(.prov-mono) { background: var(--surface-3); }
+.prov-icon img { width: 16px; height: 16px; object-fit: contain; display: block; }
 .prov-mono { font-size: 11px; font-weight: 800; letter-spacing: -0.02em; }
 .picker-group-head[aria-expanded="true"] { color: var(--accent); }
 .picker-models { background: var(--surface); }

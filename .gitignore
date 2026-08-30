@@ -2,3 +2,6 @@ node_modules/
 .env
 .env.local
 .mcp.json
+
+# macOS folder metadata, never wanted in the repo
+.DS_Store

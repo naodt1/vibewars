@@ -995,7 +995,7 @@ function providerIcon(id) {
   // the console, which is noise nobody should have to learn to ignore.
   const file = (houseConfig.providerLogos || {})[id];
   const inner = file
-    ? `<img src="/provider-logos/${encodeURIComponent(file)}" alt="" width="20" height="20" />`
+    ? `<img src="/provider-logos/${encodeURIComponent(file)}" alt="" width="16" height="16" />`
     : `<span class="prov-mono" style="color:${fb.tint}">${fb.letter}</span>`;
   return `<span class="prov-icon">${inner}</span>`;
 }
