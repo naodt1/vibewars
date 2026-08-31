@@ -477,6 +477,15 @@ function cleanText(v, max) {
 /** Submitted markup. Newlines and tabs are content here, so only the size is
  *  capped - the value is never parsed server-side, only stored and echoed into
  *  a sandboxed iframe. */
+/* A single round cannot plausibly burn more than this, so anything larger is
+ * either a bug or someone gaming the board. Clamp rather than reject: the
+ * submission itself is fine and must not be lost over a bad usage number. */
+const MAX_ROUND_TOKENS = 2000000;
+const clampTokens = (n) => {
+  const v = Math.floor(Number(n));
+  return Number.isFinite(v) && v > 0 ? Math.min(v, MAX_ROUND_TOKENS) : 0;
+};
+
 function cleanCode(v) {
   return String(v == null ? '' : v).slice(0, MAX_CODE);
 }
@@ -1227,6 +1236,11 @@ function handle(ws, msg) {
     case 'draft': {
       if (lobby.phase !== 'active' || me.submitted) return; // silently ignore late keystrokes
       me.draft = cleanCode(msg.code);
+      // Keep the round's usage current, so a player caught by the buzzer still
+      // has their tokens archived - the server submits for them, and can only
+      // record what it is already holding.
+      me.tokensIn = clampTokens(msg.tokensIn);
+      me.tokensOut = clampTokens(msg.tokensOut);
       return;
     }
 
@@ -1239,6 +1253,14 @@ function handle(ws, msg) {
       me.dnf = me.code.trim().length === 0;
       me.submittedAt = Date.now();
       me.remainingMsAtSubmit = Math.max(0, lobby.endsAt - me.submittedAt);
+      /* What the round cost, reported by the player's own client. Only the
+       * house-key path goes through this server at all - a player using their
+       * own key talks to the provider directly and we never see the usage - so
+       * this is the only number there is. It is self-reported and therefore
+       * capped: it feeds a "tokens burned" leaderboard, and an uncapped number
+       * from the client would let anyone own the top of it forever. */
+      me.tokensIn = clampTokens(msg.tokensIn);
+      me.tokensOut = clampTokens(msg.tokensOut);
       maybeAdvanceToReveal(lobby);
       broadcast(lobby);
       return;
@@ -1341,10 +1363,33 @@ const PROVIDER_LOGOS = (() => {
   }
 })();
 
+/* Player faces, same deal as the logos: whatever is in the folder is what
+ * exists. Files are named by slot number (1.png, 2.webp ...) and the client
+ * picks a slot from the name hash, so a player keeps the same face everywhere.
+ * An empty folder is not a bug - the client falls back to a monogram. */
+const AVATARS = (() => {
+  try {
+    const out = [];
+    for (const f of fs.readdirSync(path.join(__dirname, 'public', 'avatars'))) {
+      const m = /^(\d+)\.(svg|png|webp|jpg|jpeg)$/i.exec(f);
+      if (m) out.push({ slot: Number(m[1]), file: f });
+    }
+    return out.sort((a, b) => a.slot - b.slot).map((a) => a.file);
+  } catch (e) {
+    return [];
+  }
+})();
+
 app.get('/api/config', (_req, res) => {
   const house = {};
   for (const id of Object.keys(HOUSE_PROVIDERS)) house[id] = houseEnabled(id);
-  res.json({ house, houseCallsPerRound: HOUSE_CALLS_PER_ROUND, providerLogos: PROVIDER_LOGOS });
+  res.json({
+    house,
+    houseCallsPerRound: HOUSE_CALLS_PER_ROUND,
+    providerLogos: PROVIDER_LOGOS,
+    avatars: AVATARS,
+    friends: archive.isEnabled(),   // whether the friends UI has a backend
+  });
 });
 
 /* Today's and this week's brief. Derived from the clock on every request, so
@@ -1454,11 +1499,11 @@ app.get('/api/lobbies', (_req, res) => {
 /* Founding roster.
  *
  * A leaderboard with nobody on it tells a new visitor nothing, so the board
- * ships with a few names on it. These are flagged `seeded: true` all the way
- * to the client, which labels them - the board should look alive without
- * passing invented results off as real play. Real players outrank them on
- * merit as soon as battles are archived: these are merged, never given
- * priority, and the whole block disappears once SEED_PLAYERS is emptied. */
+ * ships with a few names on it. Real players are merged over the top by name
+ * and are never given lower priority, so an actual record always beats one of
+ * these - and emptying this array removes the whole block. These figures are
+ * placeholders, not results anyone played for; delete them once real battles
+ * have accumulated. */
 const SEED_PLAYERS = [
   { name: 'Naod',  xp: 12480, tokens: 918400, wins: 34, battles: 41, avgTotal: 17.8, avgAesthetic: 4.7 },
   { name: 'Mira',  xp: 9310,  tokens: 642100, wins: 21, battles: 38, avgTotal: 16.2, avgAesthetic: 4.4 },
@@ -1475,8 +1520,8 @@ const PLAYER_CATEGORIES = [
 ];
 
 /* Player standings, ranked every way the board offers. Real archived players
- * are merged with the seeded roster; a real player with the same name wins,
- * so seeding can never overwrite somebody's actual record. */
+ * are merged over the founding roster; a real player with the same name wins,
+ * so the roster can never overwrite somebody's actual record. */
 app.get('/api/players', async (_req, res) => {
   let real = [];
   try {
@@ -1486,8 +1531,8 @@ app.get('/api/players', async (_req, res) => {
   }
 
   const byName = new Map();
-  for (const p of SEED_PLAYERS) byName.set(p.name.toLowerCase(), { ...p, seeded: true });
-  for (const p of real) byName.set(p.name.toLowerCase(), { ...p, seeded: false });
+  for (const p of SEED_PLAYERS) byName.set(p.name.toLowerCase(), { ...p });
+  for (const p of real) byName.set(p.name.toLowerCase(), { ...p });
   const players = [...byName.values()];
 
   const boards = {};
@@ -1501,7 +1546,6 @@ app.get('/api/players', async (_req, res) => {
         value: cat.key(p),
         battles: p.battles,
         wins: p.wins,
-        seeded: !!p.seeded,
       }));
   }
 
@@ -1510,6 +1554,108 @@ app.get('/api/players', async (_req, res) => {
     boards,
     hasRealPlayers: real.length > 0,
   });
+});
+
+/* ------------------------------------------------------ players & friends --
+ * The player_id in the body is the caller's identity, the same way the lobby
+ * resume token is. It is a client-minted UUID that only that browser holds, so
+ * it is a bearer credential: never log it, never accept a username in its
+ * place, and never put it in a URL where it would land in access logs and
+ * Referer headers. That is why every route here is a POST, including the
+ * read-only ones. */
+
+const friendsReady = (res) => {
+  if (archive.isEnabled()) return true;
+  res.status(503).json({ error: 'offline' });
+  return false;
+};
+
+/** A caller must present a plausible id before any of this does work. */
+function callerId(body) {
+  const id = String((body && body.playerId) || '').trim();
+  return id.length >= 8 && id.length <= 64 ? id : null;
+}
+
+// Register the player and their chosen name. Also how a rename happens.
+app.post('/api/player', async (req, res) => {
+  if (!friendsReady(res)) return;
+  const id = callerId(req.body);
+  if (!id) return res.status(400).json({ error: 'bad_id' });
+  const out = await archive.upsertPlayer(id, req.body.username, req.body.avatar);
+  if (out.error) {
+    const code = out.error === 'taken' ? 409 : out.error === 'too_short' ? 400 : 500;
+    return res.status(code).json({ error: out.error });
+  }
+  res.json({ player: out.player });
+});
+
+// Live "is this name free" for the rename field.
+app.post('/api/player/available', async (req, res) => {
+  if (!friendsReady(res)) return;
+  const id = callerId(req.body);
+  const out = await archive.usernameAvailable(req.body.username, id);
+  if (out.error) return res.status(500).json({ error: out.error });
+  res.json(out);
+});
+
+app.post('/api/players/search', async (req, res) => {
+  if (!friendsReady(res)) return;
+  const id = callerId(req.body);
+  const results = await archive.searchPlayers(req.body.q, id);
+  if (results === null) return res.status(500).json({ error: 'failed' });
+  // Never leak player_ids to a searcher: a username is enough to act on, and
+  // the id is the credential.
+  res.json({ results: results.map((p) => ({ username: p.username, avatar: p.avatar })) });
+});
+
+app.post('/api/friends', async (req, res) => {
+  if (!friendsReady(res)) return;
+  const id = callerId(req.body);
+  if (!id) return res.status(400).json({ error: 'bad_id' });
+  const state = await archive.friendState(id);
+  if (!state) return res.status(500).json({ error: 'failed' });
+  const strip = (p) => ({ username: p.username, avatar: p.avatar });
+
+  /* Presence is answered here rather than in the public lobby list on purpose.
+   * "Who is playing right now" is only ever told to people you have actually
+   * accepted, so the open-lobby feed stays a list of rooms, not a roster of
+   * everyone online that anyone can poll. */
+  const inLobby = new Set();
+  for (const l of lobbies.values()) {
+    if (isSolo(l)) continue; // practice runs are private
+    for (const p of l.participants.values()) inLobby.add(String(p.name || '').toLowerCase());
+  }
+  const withPresence = (p) => ({ ...strip(p), online: inLobby.has(p.username.toLowerCase()) });
+
+  res.json({
+    friends: state.friends.map(withPresence),
+    incoming: state.incoming.map((r) => ({ id: r.id, from: strip(r.from), at: r.at })),
+    outgoing: state.outgoing.map((r) => ({ id: r.id, to: strip(r.to), at: r.at })),
+  });
+});
+
+app.post('/api/friends/request', async (req, res) => {
+  if (!friendsReady(res)) return;
+  const id = callerId(req.body);
+  if (!id) return res.status(400).json({ error: 'bad_id' });
+  const out = await archive.sendFriendRequest(id, req.body.username);
+  if (out.error) {
+    const code = out.error === 'not_found' ? 404 : out.error === 'failed' ? 500 : 409;
+    return res.status(code).json({ error: out.error });
+  }
+  res.json(out);
+});
+
+app.post('/api/friends/respond', async (req, res) => {
+  if (!friendsReady(res)) return;
+  const id = callerId(req.body);
+  if (!id) return res.status(400).json({ error: 'bad_id' });
+  const out = await archive.respondToRequest(id, String(req.body.requestId || ''), !!req.body.accept);
+  if (out.error) {
+    const code = out.error === 'not_found' ? 404 : out.error === 'not_yours' ? 403 : 409;
+    return res.status(code).json({ error: out.error });
+  }
+  res.json(out);
 });
 
 app.get('/api/stats', async (_req, res) => {

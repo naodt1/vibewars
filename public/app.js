@@ -410,6 +410,9 @@ fetch('/api/config')
     // Rebuild pickers so provider logos appear once we know which exist.
     rebuildPickers();
     if (state && !state.spectating) renderSandboxControls();
+    // Only now do we know whether there is a friends backend at all, or which
+    // avatar files exist, so this is the first honest moment to ask.
+    registerThenLoadFriends();
   })
   .catch(() => {}); // no house key info: everyone just needs their own key, as before
 
@@ -2046,19 +2049,39 @@ function showNameGate() {
   if (input) setTimeout(() => input.focus(), 60);
 }
 
-function passNameGate() {
+async function passNameGate() {
   const input = $('gateName');
-  const chosen = String((input && input.value) || '').trim().slice(0, 20);
-  if (!chosen) {
-    // Nothing typed is not an error worth blocking on: fall back to the
-    // generated name rather than refusing to let anyone in.
-    saveIdentity({ ...identity, nickname: generateNickname(), named: true });
-  } else {
-    saveIdentity({ ...identity, nickname: chosen, named: true });
+  const btn = $('gateEnter');
+  const err = $('gateError');
+  const setErr = (msg) => {
+    if (!err) return;
+    err.textContent = msg || '';
+    err.hidden = !msg;
+  };
+  // Nothing typed is not an error worth blocking on: fall back to the
+  // generated name rather than refusing to let anyone in.
+  const chosen = String((input && input.value) || '').trim().slice(0, 20) || generateNickname();
+  setErr('');
+
+  // Names have to be unique now, so entering means claiming. If the registry
+  // is switched off or unreachable the claim is skipped entirely: the gate is
+  // the front door to the game and must never be a place you get stuck.
+  if (btn) { btn.disabled = true; btn.textContent = 'Entering...'; }
+  const result = await claimUsername(chosen);
+  if (btn) { btn.disabled = false; btn.innerHTML = 'Enter the arena &#8594;'; }
+
+  if (result === 'taken') {
+    setErr(`"${chosen}" is taken. Try another.`);
+    if (input) { input.focus(); input.select(); }
+    return;
   }
+
+  saveIdentity({ ...identity, nickname: chosen, named: true });
   show('entry');
   showChoice();
   renderProgressChip();   // there is a player now, so the chip can appear
+  refreshFriends();
+  tryResume();            // held back until the gate was passed
 }
 
 function setNickname(name) {
@@ -2406,7 +2429,28 @@ function renderProfile() {
   const earned = new Set(progress.badges);
   const totalTokens = progress.tokensIn + progress.tokensOut;
 
+  const me = identity ? identity.nickname : '';
+
   host.innerHTML =
+    // Who you are, before what you have done. The name is editable here and
+    // nowhere else, because changing it is a claim against a shared registry
+    // rather than a local preference.
+    '<div class="account-card">' +
+      avatarHtml(me, 'avatar-lg') +
+      '<div class="account-id">' +
+        `<span class="account-name" id="accountName">${esc(me)}</span>` +
+        '<span class="muted account-sub">No password, no email. This name is your handle.</span>' +
+      '</div>' +
+      '<button class="btn btn-sm" id="editName" type="button">Change name</button>' +
+    '</div>' +
+    '<div id="nameEditor" hidden></div>' +
+
+    // Friends sit with the account, not below the stats. Everything under this
+    // is a record of what you have done, which is worth reading occasionally;
+    // finding people is what someone opens this page to *do*.
+    '<h3 class="friends-h">Friends</h3>' +
+    '<div id="friendsPanel"></div>' +
+
     '<div class="profile-head">' +
       `<div class="profile-level"><span class="profile-level-num">${level}</span>` +
       '<span class="profile-level-word">Level</span></div>' +
@@ -2482,6 +2526,14 @@ function renderProfile() {
   host.querySelectorAll('[data-open-keys]').forEach((b) => {
     b.onclick = () => openPage('keys');
   });
+
+  const edit = $('editName');
+  if (edit) edit.onclick = openNameEditor;
+
+  renderFriendsPanel();
+  // The panel drew from whatever was last fetched; go and get the current
+  // state so an incoming request that arrived since is on screen.
+  refreshFriends();
 
   const reset = $('resetProgress');
   if (reset) {
@@ -2617,113 +2669,135 @@ function startChallenge(kind) {
  * very first thing anyone saw was a multi-step reading exercise instead of
  * the game. */
 
+/* The walkthrough. Every shot is a real capture of a real round, produced by
+ * tools/shots.js - regenerate them with `npm run shots` after a design change
+ * rather than editing anything here. The width/height on each are the file's
+ * own pixel dimensions; they are what stops the page from jumping around as
+ * the images arrive. */
 const GUIDE_STEPS = [
   {
-    title: 'One brief, dealt to everyone',
+    title: 'Pick a name',
     body:
-      'A lobby holds four to six players. Inside it you play battles - one round each. Nobody ' +
-      'writes the brief: the host picks a topic and the server deals a product, a task, and ' +
-      'usually one deliberately annoying constraint.',
-    art: `<rect x="14" y="18" width="92" height="64" rx="8" class="g-surface"/>
-          <rect x="26" y="32" width="46" height="7" rx="3.5" class="g-accent"/>
-          <rect x="26" y="46" width="68" height="6" rx="3" class="g-line"/>
-          <rect x="26" y="58" width="54" height="6" rx="3" class="g-line"/>
-          <circle cx="96" cy="26" r="4" class="g-accent"/>`,
+      'No account, no password, no email. You choose a handle once on the way in and that is ' +
+      'who you are: on your tile, on the ballot, and on the leaderboard.',
+    key: '1-name', wide: false,
+    caption: 'Asked once, on arrival.',
   },
   {
     title: 'Declare what you are building with',
     body:
-      'Pick the model or tool you will actually use. The next step offers to take a key for it: ' +
-      'connect one and vibewars asks that provider what you can reach, so your pick is verified ' +
-      'rather than just claimed, and you can prompt it from inside the game. Skipping is fine - ' +
-      'you just paste your HTML in by hand instead.',
-    art: `<rect x="14" y="26" width="92" height="20" rx="10" class="g-surface"/>
-          <rect x="14" y="54" width="92" height="20" rx="10" class="g-surface"/>
-          <circle cx="28" cy="36" r="5" class="g-accent"/>
-          <circle cx="28" cy="64" r="5" class="g-line"/>
-          <path d="M84 32l5 5 9-10" class="g-stroke"/>`,
+      'Name the model or tool actually doing the work. It is stamped on your tile for everyone ' +
+      'to see, so a win is a win for something. Connect a key and vibewars asks that provider ' +
+      'what you can reach, which turns your pick from a claim into a verified one - and lets ' +
+      'you prompt the model from inside the game.',
+    key: '2-model', wide: false,
+    caption: 'Every current model from the four big providers, plus whatever you type.',
+  },
+  {
+    title: 'One brief, dealt to everyone',
+    body:
+      'Nobody writes the brief. The host picks a topic and the server deals the same product, ' +
+      'task and constraint to all four to six of you at once. You see it when everybody else ' +
+      'does, and the clock starts together.',
+    key: '3-brief', wide: true,
+    caption: 'The whole brief: what to build, and the one thing it has to include.',
   },
   {
     title: 'Build against the clock',
     body:
-      'Prompt your model right there in the sandbox. It already has the brief, so ask for what ' +
-      'you want and watch it render live - or paste your own HTML into the editor. One file, no ' +
-      'frameworks, no build step. Submitting early banks the time you had left, which settles ties.',
-    art: `<rect x="14" y="18" width="92" height="64" rx="8" class="g-surface"/>
-          <rect x="24" y="30" width="30" height="6" rx="3" class="g-accent"/>
-          <rect x="24" y="42" width="58" height="5" rx="2.5" class="g-line"/>
-          <rect x="24" y="52" width="44" height="5" rx="2.5" class="g-line"/>
-          <rect x="24" y="62" width="62" height="5" rx="2.5" class="g-line"/>`,
-  },
-  {
-    title: 'The buzzer is merciless',
-    body:
-      'At zero everything locks. Whatever is in your editor is submitted for you, so half-finished ' +
-      'still counts - it just banks no time. An empty editor is a DNF, and a DNF still gets voted on.',
-    art: `<circle cx="60" cy="50" r="30" class="g-ring"/>
-          <path d="M60 50V30" class="g-stroke"/>
-          <path d="M60 50l14 10" class="g-accent-stroke"/>
-          <circle cx="60" cy="50" r="3.5" class="g-accent"/>`,
+      'Prompt your model in the sandbox on the left and watch it render on the right, or paste ' +
+      'your own HTML straight into the editor. One file, no frameworks, no build step. ' +
+      'Submitting early banks the time you had left, and banked time settles ties.',
+    key: '4-build', wide: true,
+    caption: 'Clock, brief and everyone’s status up top. Your model on the left, what it built on the right.',
   },
   {
     title: 'Everything is revealed',
     body:
-      'Every submission renders live in its own sandbox, one contestant at a time, labelled with ' +
-      'who wrote it and what they used. Step through with Back and Next - the same way you are ' +
-      'moving through this guide.',
-    art: `<rect x="10" y="24" width="58" height="52" rx="7" class="g-surface"/>
-          <rect x="74" y="34" width="36" height="32" rx="6" class="g-line-fill"/>
-          <rect x="20" y="36" width="30" height="6" rx="3" class="g-accent"/>
-          <rect x="20" y="48" width="38" height="5" rx="2.5" class="g-line"/>
-          <rect x="20" y="58" width="24" height="5" rx="2.5" class="g-line"/>`,
+      'At zero it all locks. Whatever is in your editor is submitted for you, so half-finished ' +
+      'still counts - it just banks no time. Then every submission renders live, one at a time, ' +
+      'labelled with who wrote it and what they used.',
+    key: '5-judge', wide: false,
+    caption: 'Real, running pages. Not screenshots of them.',
   },
   {
     title: 'Score everyone but yourself',
     body:
       'Four criteria, five stars each: Requirements Met, Functionality, Aesthetic and Approach. ' +
-      'Each is averaged across your voters and the four averages are added, so 20.00 is perfect. ' +
-      'One ballot per person, no changes after.',
-    art: `<path d="M32 40l4 8 9 1-6.5 6 1.5 9-8-4.5-8 4.5 1.5-9-6.5-6 9-1z" class="g-accent"/>
-          <path d="M64 40l4 8 9 1-6.5 6 1.5 9-8-4.5-8 4.5 1.5-9-6.5-6 9-1z" class="g-accent"/>
-          <path d="M96 40l4 8 9 1-6.5 6 1.5 9-8-4.5-8 4.5 1.5-9-6.5-6 9-1z" class="g-line"/>`,
+      'Each is averaged across your voters, then the four averages are added, so 20.00 is ' +
+      'perfect. One ballot per person and no changes once it is in.',
+    key: '6-vote', wide: true,
+    caption: 'You cannot vote for yourself, and you cannot vote twice.',
+  },
+  {
+    title: 'Someone gets crowned',
+    body:
+      'Every score is on the table, including how many people voted on each entry. Then you ' +
+      'run it back with a new brief, and the XP, streaks and badges follow you home.',
+    key: '7-results', wide: true,
+    caption: 'Four averages, added. The whole board, not just the winner.',
   },
 ];
 
-let guideIndex = 0;
+/* Filenames and sizes come from public/how/shots.json, written by the capture
+ * tool. Fetched once and remembered: the guide is one of the few pages people
+ * open twice. */
+let shotIndex = null;
 
-function renderGuide() {
+async function loadShots() {
+  if (shotIndex) return shotIndex;
+  try {
+    const list = await fetch('/how/shots.json').then((r) => (r.ok ? r.json() : []));
+    shotIndex = Object.fromEntries(list.map((s) => [s.key, s]));
+  } catch (e) {
+    shotIndex = {}; // no manifest: the guide still reads fine as text
+  }
+  return shotIndex;
+}
+
+async function renderGuide() {
   const host = $('guide');
   if (!host) return;
-  const step = GUIDE_STEPS[guideIndex];
-  const last = guideIndex === GUIDE_STEPS.length - 1;
+  const shots = await loadShots();
 
+  /* This used to be a one-step-at-a-time carousel. A walkthrough is something
+   * people scan before deciding to play, and a carousel hides five of six
+   * steps behind a button - so it is a page now, and the screenshots do most
+   * of the explaining. */
   host.innerHTML =
-    '<div class="guide-art"><svg viewBox="0 0 120 100" aria-hidden="true">' + step.art + '</svg></div>' +
-    `<p class="guide-count">Step ${guideIndex + 1} of ${GUIDE_STEPS.length}</p>` +
-    `<h3 class="guide-title">${esc(step.title)}</h3>` +
-    `<p class="guide-body">${esc(step.body)}</p>` +
-    '<div class="guide-dots">' +
-    GUIDE_STEPS.map(
-      (_, i) => `<button class="guide-dot${i === guideIndex ? ' current' : ''}" data-go="${i}"></button>`
-    ).join('') +
-    '</div>' +
-    '<div class="guide-nav">' +
-    `<button class="btn" data-guide="back"${guideIndex === 0 ? ' disabled' : ''}>&#8592; Back</button>` +
-    `<button class="btn btn-primary" data-guide="${last ? 'done' : 'next'}">` +
-    (last ? 'Got it, let me play' : 'Next &#8594;') +
-    '</button></div>';
+    '<p class="guide-intro">Four to six people, one surprise brief, one clock. Everybody builds ' +
+    'with whatever model they like, then everybody scores everybody else. A round takes about ' +
+    'fifteen minutes.</p>' +
 
-  host.querySelector('[data-guide="back"]').onclick = () => {
-    if (guideIndex > 0) { guideIndex--; renderGuide(); }
-  };
-  const fwd = host.querySelector('[data-guide="next"], [data-guide="done"]');
-  fwd.onclick = () => {
-    if (last) closePage();
-    else { guideIndex++; renderGuide(); }
-  };
-  host.querySelectorAll('[data-go]').forEach((d) => {
-    d.onclick = () => { guideIndex = Number(d.dataset.go); renderGuide(); };
-  });
+    '<ol class="guide-steps">' +
+    GUIDE_STEPS.map((step, i) => (
+      `<li class="guide-step${step.wide ? ' guide-step-wide' : ''}">` +
+        '<div class="guide-step-text">' +
+          `<span class="guide-step-num">${String(i + 1).padStart(2, '0')}</span>` +
+          `<h3 class="guide-step-title">${esc(step.title)}</h3>` +
+          `<p class="guide-step-body">${esc(step.body)}</p>` +
+        '</div>' +
+        (shots[step.key]
+          ? '<figure class="shot">' +
+              `<img src="/how/${esc(shots[step.key].file)}" ` +
+                   `width="${shots[step.key].w}" height="${shots[step.key].h}" ` +
+                   `alt="${esc(step.title)}" loading="lazy" decoding="async" />` +
+              `<figcaption>${esc(step.caption)}</figcaption>` +
+            '</figure>'
+          : '') +
+      '</li>'
+    )).join('') +
+    '</ol>' +
+
+    '<div class="guide-end">' +
+      '<h3>That is the whole game.</h3>' +
+      '<p class="muted">You can also play solo against the clock, or watch a battle in progress ' +
+      'without taking a seat.</p>' +
+      '<button class="btn btn-primary btn-lg" id="guidePlay">Play &#8594;</button>' +
+    '</div>';
+
+  const play = $('guidePlay');
+  if (play) play.onclick = () => { closePage(); showPlay(); };
 }
 
 const PAGES = {
@@ -2886,9 +2960,6 @@ function playerTable(rows, unit, limit) {
           `<span class="lb-rank">${i + 1}</span>` +
           '<span class="lb-who">' +
             `<span class="lb-name">${esc(r.name)}</span>` +
-            // Seeded names say so plainly: the board should look alive without
-            // presenting invented results as real play.
-            (r.seeded ? '<span class="lb-seed">sample</span>' : '') +
             (me ? '<span class="lb-you">you</span>' : '') +
           '</span>' +
           `<span class="lb-meta">${Number(r.battles) || 0} battles</span>` +
@@ -3313,6 +3384,8 @@ function showMultiplayer() {
   showError('');
   syncNavChrome();
   loadLobbies();
+  renderFriendStrip();   // draw from what we have, then refresh presence
+  refreshFriends();
   setPageBack('Menu', showPlay);
 }
 
@@ -3749,7 +3822,15 @@ $('resetBtn').onclick = () => {
   sendMsg({ type: 'reset' });
 };
 
-$('submitBtn').onclick = () => sendMsg({ type: 'submit', code: $('codeInput').value });
+$('submitBtn').onclick = () => sendMsg({
+  type: 'submit',
+  code: $('codeInput').value,
+  // What this round cost, so the archive can rank tokens burned. Only the
+  // house-key path goes through the server, so for anyone on their own key
+  // this is the only place the number can come from.
+  tokensIn: sandbox.tokensIn,
+  tokensOut: sandbox.tokensOut,
+});
 
 $('prevContestant').onclick = () => {
   if (revealIndex > 0) {
@@ -3787,7 +3868,11 @@ function flushDraft() {
   if (myParticipant()?.submitted) return;
   if (val === sentDraft) return;
   sentDraft = val;
-  sendMsg({ type: 'draft', code: val });
+  /* Usage rides along with the draft, not just the submit. At the buzzer the
+   * server submits for you, and it can only archive what it already holds -
+   * without this, anyone who ran out of time burned tokens the board never
+   * counted. */
+  sendMsg({ type: 'draft', code: val, tokensIn: sandbox.tokensIn, tokensOut: sandbox.tokensOut });
 }
 
 $('codeInput').addEventListener('input', () => {
@@ -3800,6 +3885,582 @@ window.addEventListener('blur', flushDraft);
 window.addEventListener('pagehide', flushDraft);
 document.addEventListener('visibilitychange', flushDraft);
 setInterval(flushDraft, 2000); // slow backstop for anything the events missed
+
+/* ============================================================== friends ====
+ * A player's identity here is still just a localStorage playerId - no account,
+ * no password. What the server adds is a *registry* of those ids, so a name
+ * can be unique and two of them can be linked. The playerId is the credential
+ * that proves you are you, so it goes in the POST body and never in a URL.
+ *
+ * The whole feature is optional: with no Supabase configured every call 503s
+ * and the UI says so instead of breaking. The game does not depend on it. */
+
+/** POST helper. Always sends the caller's id; never throws. */
+async function friendPost(path, body) {
+  try {
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playerId: identity ? identity.playerId : '', ...body }),
+    });
+    const json = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, ...json };
+  } catch (e) {
+    // Offline or the server went away mid-session. Callers treat this the same
+    // as the feature being switched off.
+    return { ok: false, status: 0, error: 'offline' };
+  }
+}
+
+const friendsOn = () => houseConfig.friends === true;
+
+/* ------------------------------------------------------------- avatars -- *
+ * Faces come from public/avatars/ - real files, dropped in by hand, listed by
+ * the server. Nothing is drawn here. With the folder empty every player gets a
+ * monogram tinted from their name instead: stable, distinct, and honest about
+ * being a placeholder rather than a face nobody chose. */
+
+/* A fixed list of ten swatches put four of the first twelve names on the same
+ * green - two of them near-identical to a third. Quantised hue gives 24 evenly
+ * spaced buckets instead, so a collision needs the same bucket *and* the same
+ * first letter. Saturation and lightness are fixed, which is what keeps a
+ * hashed hue looking like part of the palette rather than a random colour. */
+const AVATAR_HUE_STEPS = 24;
+
+function avatarTint(name) {
+  const hue = (nameHash(name) % AVATAR_HUE_STEPS) * (360 / AVATAR_HUE_STEPS);
+  return `hsl(${hue} 70% 62%)`;
+}
+
+/** FNV-1a over the name: same name, same face, on every device. */
+function nameHash(name) {
+  let h = 2166136261;
+  const s = String(name || '').toLowerCase();
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function avatarHtml(name, cls) {
+  const files = houseConfig.avatars || [];
+  const h = nameHash(name);
+  if (files.length) {
+    const file = files[h % files.length];
+    return `<span class="avatar ${cls || ''}"><img src="/avatars/${encodeURIComponent(file)}" alt="" /></span>`;
+  }
+  const tint = avatarTint(name);
+  const letter = (String(name || '?').trim()[0] || '?').toUpperCase();
+  return `<span class="avatar avatar-mono ${cls || ''}" style="--tint:${tint}">${esc(letter)}</span>`;
+}
+
+/* Everyone who played before the registry existed already has a name, and it
+ * has never been written down anywhere but their own browser. Claim it on the
+ * quiet so they are searchable like everybody else. A collision is not worth
+ * interrupting them over: they keep the name they have always had locally and
+ * can pick a free one from the profile whenever they care to.
+ * The same call refreshes last_seen, so it doubles as a heartbeat. */
+async function registerThenLoadFriends() {
+  if (!friendsOn() || needsName()) return;
+  await claimUsername(identity.nickname);
+  refreshFriends();
+}
+
+/* ------------------------------------------------------- friend state -- */
+
+let friends = { friends: [], incoming: [], outgoing: [] };
+let friendsLoaded = false;
+let friendsSeq = 0;
+
+/* Acting on a friend and then refreshing means two fetches can be in the air
+ * at once - accepting a request while the poll from the previous click is
+ * still coming back. Whichever answers last used to win, which could put the
+ * pre-accept state back on screen. Only the newest request may write. */
+async function refreshFriends() {
+  if (!friendsOn() || needsName()) return;
+  const seq = ++friendsSeq;
+  const out = await friendPost('/api/friends', {});
+  if (seq !== friendsSeq) return;   // a newer refresh already answered
+  if (!out.ok) return;
+  friends = { friends: out.friends || [], incoming: out.incoming || [], outgoing: out.outgoing || [] };
+  friendsLoaded = true;
+  renderFriendAlert();
+  // Repaint whatever is currently showing friend data.
+  if ($('friendsPanel')) renderFriendsPanel();
+  renderFriendStrip();
+}
+
+/** The unread dot on the profile chip: someone is waiting on an answer. */
+function renderFriendAlert() {
+  const host = $('navProgress');
+  if (!host) return;
+  const n = friends.incoming.length;
+  let dot = host.querySelector('.nav-dot');
+  if (!n) { if (dot) dot.remove(); return; }
+  if (!dot) {
+    dot = document.createElement('span');
+    dot.className = 'nav-dot';
+    host.appendChild(dot);
+  }
+  dot.textContent = n > 9 ? '9+' : String(n);
+  host.title = n === 1 ? '1 friend request waiting' : n + ' friend requests waiting';
+}
+
+/* --------------------------------------------------- username claiming -- */
+
+/** Register the current nickname with the server. Returns 'ok' | 'taken' | 'off'. */
+async function claimUsername(name) {
+  if (!friendsOn()) return 'off';
+  const out = await friendPost('/api/player', { username: name, avatar: nameHash(name) % 1000 });
+  if (out.ok) return 'ok';
+  return out.error === 'taken' ? 'taken' : 'off';
+}
+
+/* ------------------------------------------------------- friends panel -- */
+
+function friendRow(p, actionHtml) {
+  return (
+    '<div class="friend-row">' +
+    avatarHtml(p.username, 'avatar-sm') +
+    `<span class="friend-name">${esc(p.username)}</span>` +
+    (actionHtml || '') +
+    '</div>'
+  );
+}
+
+function renderFriendsPanel() {
+  const host = $('friendsPanel');
+  if (!host) return;
+
+  if (!friendsOn()) {
+    host.innerHTML = '<p class="muted">Friends need the shared player registry, which this ' +
+      'instance is not running. Everything else works without it.</p>';
+    return;
+  }
+
+  /* The search field is built once and then left alone. The 30 second poll
+   * re-renders this panel, and rebuilding the whole thing would clear whatever
+   * somebody was halfway through typing and close the dropdown under their
+   * cursor. Only the lists below are redrawn. */
+  if (!$('friendSearchWrap')) {
+    host.innerHTML =
+      '<div class="friend-search" id="friendSearchWrap">' +
+        '<input id="friendQuery" type="text" placeholder="Search players by username" ' +
+          'autocomplete="off" spellcheck="false" maxlength="20" ' +
+          'role="combobox" aria-expanded="false" aria-controls="friendResults" ' +
+          'aria-autocomplete="list" aria-label="Search players by username" />' +
+        '<div id="friendResults" class="friend-drop" role="listbox" hidden></div>' +
+      '</div>' +
+      '<div id="friendLists"></div>';
+    wireFriendSearch();
+  }
+
+  const { friends: mine, incoming, outgoing } = friends;
+
+  $('friendLists').innerHTML =
+    (incoming.length
+      ? '<h4 class="friend-head">Requests <span class="friend-count">' + incoming.length + '</span></h4>' +
+        '<div class="friend-list">' +
+          incoming.map((r) => friendRow(r.from,
+            '<span class="friend-actions">' +
+            `<button class="btn btn-primary btn-sm" data-accept="${esc(r.id)}">Accept</button>` +
+            `<button class="btn btn-sm" data-decline="${esc(r.id)}">Decline</button></span>`
+          )).join('') +
+        '</div>'
+      : '') +
+
+    (outgoing.length
+      ? '<h4 class="friend-head">Sent</h4><div class="friend-list">' +
+          outgoing.map((r) => friendRow(r.to, '<span class="friend-pending">pending</span>')).join('') +
+        '</div>'
+      : '') +
+
+    '<h4 class="friend-head">Friends <span class="friend-count">' + mine.length + '</span></h4>' +
+    (mine.length
+      ? '<div class="friend-list">' + mine.map((p) => friendRow(p, '')).join('') + '</div>'
+      : '<p class="muted">Nobody yet. Start typing a username above to find someone. ' +
+        'Friends show up on the multiplayer screen so you can see who is around.</p>');
+
+  $('friendLists').querySelectorAll('[data-accept]').forEach((b) => {
+    b.onclick = () => respondFriend(b.getAttribute('data-accept'), true, b);
+  });
+  $('friendLists').querySelectorAll('[data-decline]').forEach((b) => {
+    b.onclick = () => respondFriend(b.getAttribute('data-decline'), false, b);
+  });
+}
+
+/* ------------------------------------------------- search as you type ---- *
+ * A combobox, not a form: results arrive while typing and are chosen with the
+ * keyboard or the mouse. Two things it has to get right - a slow answer for
+ * "na" must never overwrite the results for "naod", and the dropdown must not
+ * steal Enter from anything else on the page. */
+
+let searchDebounce = null;
+let searchSeq = 0;
+let searchResults = [];   // what the dropdown is currently showing
+let searchActive = -1;    // keyboard cursor, -1 = nothing highlighted
+
+const SEARCH_MIN = 2;
+
+function wireFriendSearch() {
+  const input = $('friendQuery');
+  const drop = $('friendResults');
+
+  input.addEventListener('input', () => {
+    clearTimeout(searchDebounce);
+    const term = input.value.trim();
+    if (term.length < SEARCH_MIN) {
+      // Nothing useful to show yet, and no request worth spending.
+      closeFriendDrop();
+      return;
+    }
+    // Long enough to be worth a round trip, but not on every keystroke.
+    searchDebounce = setTimeout(() => runFriendSearch(term), 180);
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (!searchResults.length) return;
+      e.preventDefault();
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      searchActive = (searchActive + step + searchResults.length) % searchResults.length;
+      paintFriendDrop();
+    } else if (e.key === 'Enter') {
+      if (searchActive < 0 || !searchResults[searchActive]) return;
+      e.preventDefault();
+      const pick = searchResults[searchActive];
+      if (pick.state === 'none') addFriend(pick.username);
+    } else if (e.key === 'Escape') {
+      if (drop.hidden) return;
+      e.preventDefault();   // close the dropdown before anything else reacts
+      closeFriendDrop();
+    }
+  });
+
+  // Reopening on focus saves retyping a search you clicked away from.
+  input.addEventListener('focus', () => {
+    if (searchResults.length && input.value.trim().length >= SEARCH_MIN) openFriendDrop();
+  });
+
+  // Clicking anywhere else dismisses it. Registered once, with the panel.
+  document.addEventListener('pointerdown', (e) => {
+    const wrap = $('friendSearchWrap');
+    if (wrap && !wrap.contains(e.target)) closeFriendDrop();
+  });
+}
+
+function openFriendDrop() {
+  const drop = $('friendResults'), input = $('friendQuery');
+  if (!drop) return;
+  drop.hidden = false;
+  if (input) input.setAttribute('aria-expanded', 'true');
+}
+
+function closeFriendDrop() {
+  const drop = $('friendResults'), input = $('friendQuery');
+  if (!drop) return;
+  drop.hidden = true;
+  searchActive = -1;
+  if (input) {
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+  }
+}
+
+/** Where the searcher already stands with this person - decides the action. */
+function relationTo(username) {
+  const lower = username.toLowerCase();
+  if (friends.friends.some((p) => p.username.toLowerCase() === lower)) return 'friends';
+  if (friends.outgoing.some((r) => r.to.username.toLowerCase() === lower)) return 'sent';
+  if (friends.incoming.some((r) => r.from.username.toLowerCase() === lower)) return 'incoming';
+  return 'none';
+}
+
+async function runFriendSearch(term) {
+  const q = String(term || '').trim();
+  if (q.length < SEARCH_MIN) { closeFriendDrop(); return; }
+
+  const seq = ++searchSeq;
+
+  /* The registry is a remote database and a search has been measured anywhere
+   * between 240ms and 850ms. That is long enough for a field that shows
+   * nothing to read as broken, so say we are working - as a note when there is
+   * nothing on screen yet, and as a dimmed list when there are older results
+   * worth keeping visible until better ones arrive. */
+  const drop = $('friendResults');
+  if (drop) {
+    drop.setAttribute('aria-busy', 'true');
+    if (!searchResults.length) {
+      drop.innerHTML = '<p class="drop-note">Searching...</p>';
+      openFriendDrop();
+    } else {
+      drop.classList.add('is-busy');
+    }
+  }
+
+  const out = await friendPost('/api/players/search', { q });
+
+  // "na" answering after "naod" would otherwise put the wrong list on screen.
+  // The busy state is cleared inside this guard, not before it: an older
+  // answer arriving while a newer search is still running must not make the
+  // field look settled when it is not.
+  if (seq !== searchSeq) return;
+  if (drop) { drop.removeAttribute('aria-busy'); drop.classList.remove('is-busy'); }
+  // The field may have been cleared or changed while this was in flight.
+  const input = $('friendQuery');
+  if (!input || input.value.trim() !== q) return;
+
+  if (!out.ok) {
+    searchResults = [];
+    searchActive = -1;
+    $('friendResults').innerHTML = '<p class="drop-note">Search is unavailable right now.</p>';
+    openFriendDrop();
+    return;
+  }
+
+  searchResults = (out.results || []).map((p) => ({ ...p, state: relationTo(p.username) }));
+  searchActive = searchResults.length ? 0 : -1;
+  paintFriendDrop(q);
+  openFriendDrop();
+}
+
+const DROP_LABEL = {
+  friends: 'Friends',
+  sent: 'Pending',
+  incoming: 'Wants to add you',
+  failed: 'Failed',
+};
+
+function paintFriendDrop(query) {
+  const drop = $('friendResults');
+  const input = $('friendQuery');
+  if (!drop) return;
+
+  if (!searchResults.length) {
+    drop.innerHTML = `<p class="drop-note">No player called "${esc(query || (input && input.value) || '')}".</p>`;
+    if (input) input.removeAttribute('aria-activedescendant');
+    return;
+  }
+
+  drop.innerHTML = searchResults.map((p, i) => {
+    const action = p.state === 'none'
+      ? '<span class="drop-add">Add</span>'
+      : `<span class="friend-pending">${DROP_LABEL[p.state]}</span>`;
+    return (
+      `<div class="drop-row${i === searchActive ? ' is-active' : ''}" role="option" ` +
+      `id="fdrop-${i}" aria-selected="${i === searchActive}" data-pick="${i}">` +
+      avatarHtml(p.username, 'avatar-sm') +
+      `<span class="friend-name">${highlightMatch(p.username, query || (input && input.value) || '')}</span>` +
+      action +
+      '</div>'
+    );
+  }).join('');
+
+  if (input && searchActive >= 0) input.setAttribute('aria-activedescendant', 'fdrop-' + searchActive);
+
+  drop.querySelectorAll('[data-pick]').forEach((row) => {
+    const i = Number(row.getAttribute('data-pick'));
+    // pointerdown, not click: the input's blur would close this first.
+    row.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      if (searchResults[i] && searchResults[i].state === 'none') addFriend(searchResults[i].username);
+    });
+    row.addEventListener('mouseenter', () => { searchActive = i; paintFriendDrop(query); });
+  });
+}
+
+/** Bold the part the player actually typed, so a long list is scannable. */
+function highlightMatch(name, query) {
+  const q = String(query || '').trim();
+  const at = q ? name.toLowerCase().indexOf(q.toLowerCase()) : -1;
+  if (at < 0) return esc(name);
+  return esc(name.slice(0, at)) + '<b>' + esc(name.slice(at, at + q.length)) + '</b>' +
+    esc(name.slice(at + q.length));
+}
+
+async function addFriend(username) {
+  /* Mark the row by name, not by index. Indexes go stale: typing another
+   * character while a request is in flight replaces searchResults wholesale,
+   * and writing back to position 3 of a list that now has two entries threw
+   * "cannot set properties of undefined". Looking the row up again on the way
+   * out also means a row that is no longer on screen is quietly skipped. */
+  const mark = (state) => {
+    const row = searchResults.find((p) => p.username === username);
+    if (!row) return false;
+    row.state = state;
+    paintFriendDrop();
+    return true;
+  };
+
+  // Answer immediately: the request takes a few hundred ms against a remote
+  // database, and a row that does nothing when clicked reads as broken long
+  // before it reads as slow.
+  mark('sent');
+
+  const out = await friendPost('/api/friends/request', { username });
+
+  // 'accepted' comes back when they had already asked us: answering their
+  // pending request is the sane reading of adding them back.
+  mark(out.ok
+    ? (out.accepted ? 'friends' : 'sent')
+    : out.error === 'already_friends' ? 'friends'
+    : out.error === 'already_sent' ? 'sent'
+    : 'failed');
+
+  await refreshFriends();
+}
+
+async function respondFriend(id, accept, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = accept ? 'Accepting...' : 'Declining...'; }
+  await friendPost('/api/friends/respond', { requestId: id, accept });
+  await refreshFriends();
+}
+
+/* ------------------------------------------------------ renaming ------- *
+ * A rename is a claim against a registry other people share, so it can fail.
+ * The field says whether the name is free while it is being typed, and the
+ * save still re-checks server side - the live check is a courtesy, not the
+ * gate. Losing a race between the two just shows "taken" on save. */
+
+let nameCheckTimer = null;
+let nameCheckSeq = 0;
+
+function openNameEditor() {
+  const host = $('nameEditor');
+  if (!host) return;
+  if (!host.hidden) { closeNameEditor(); return; }
+
+  host.hidden = false;
+  host.innerHTML =
+    '<div class="name-editor">' +
+      '<label class="wiz-label" for="newName">New name</label>' +
+      `<input id="newName" type="text" maxlength="20" autocomplete="off" value="${esc(identity.nickname)}" />` +
+      '<p class="name-status muted" id="nameStatus">2 to 20 characters. Letters, numbers, ' +
+        'underscore and dash.</p>' +
+      '<div class="name-editor-actions">' +
+        '<button class="btn btn-primary" id="saveName" type="button">Save name</button>' +
+        '<button class="btn" id="cancelName" type="button">Cancel</button>' +
+      '</div>' +
+    '</div>';
+
+  const input = $('newName');
+  input.focus();
+  input.select();
+  input.oninput = () => {
+    clearTimeout(nameCheckTimer);
+    nameCheckTimer = setTimeout(() => checkNameFree(input.value), 350);
+  };
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); saveNewName(); }
+    if (e.key === 'Escape') closeNameEditor();
+  };
+  $('saveName').onclick = saveNewName;
+  $('cancelName').onclick = closeNameEditor;
+}
+
+function closeNameEditor() {
+  clearTimeout(nameCheckTimer);
+  const host = $('nameEditor');
+  if (host) { host.hidden = true; host.innerHTML = ''; }
+}
+
+function setNameStatus(text, kind) {
+  const el = $('nameStatus');
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'name-status ' + (kind === 'ok' ? 'is-ok' : kind === 'bad' ? 'is-bad' : 'muted');
+}
+
+/** Local shape check, so obviously bad input never costs a round trip. */
+function nameProblem(raw) {
+  const name = String(raw || '').trim();
+  if (name.length < 2) return 'Too short - 2 characters minimum.';
+  if (name.length > 20) return 'Too long - 20 characters maximum.';
+  if (!/^[A-Za-z0-9_\-]+$/.test(name)) return 'Letters, numbers, underscore and dash only.';
+  return null;
+}
+
+async function checkNameFree(raw) {
+  const name = String(raw || '').trim();
+  if (name.toLowerCase() === identity.nickname.toLowerCase()) {
+    setNameStatus('That is your name already.', null);
+    return;
+  }
+  const problem = nameProblem(name);
+  if (problem) { setNameStatus(problem, 'bad'); return; }
+
+  // Answers can land out of order when someone types fast; only the newest
+  // request is allowed to write the status line.
+  const seq = ++nameCheckSeq;
+  setNameStatus('Checking...', null);
+  const out = await friendPost('/api/player/available', { username: name });
+  if (seq !== nameCheckSeq) return;
+  if (!out.ok) { setNameStatus('Could not check right now. Saving will still tell you.', null); return; }
+  setNameStatus(out.available ? `"${name}" is free.` : `"${name}" is taken.`, out.available ? 'ok' : 'bad');
+}
+
+async function saveNewName() {
+  const input = $('newName');
+  const btn = $('saveName');
+  if (!input) return;
+  const name = String(input.value || '').trim();
+
+  if (name.toLowerCase() === identity.nickname.toLowerCase()) { closeNameEditor(); return; }
+  const problem = nameProblem(name);
+  if (problem) { setNameStatus(problem, 'bad'); return; }
+
+  btn.disabled = true;
+  const before = btn.textContent;
+  btn.textContent = 'Saving...';
+  const result = await claimUsername(name);
+  btn.disabled = false;
+  btn.textContent = before;
+
+  if (result === 'taken') { setNameStatus(`"${name}" is taken. Pick another.`, 'bad'); return; }
+
+  // 'off' means there is no registry to claim against, so the rename is purely
+  // local. That is the same deal every other player has on this instance.
+  saveIdentity({ ...identity, nickname: name });
+  closeNameEditor();
+  renderProfile();
+}
+
+/* ----------------------------------------------- friends in multiplayer -- *
+ * Not a chat and not an invite system - a presence line. It answers the one
+ * question the multiplayer screen leaves open: is anyone I know here? */
+
+function renderFriendStrip() {
+  const host = $('friendStrip');
+  if (!host) return;
+  if (!friendsOn() || needsName() || !friends.friends.length) { host.hidden = true; return; }
+
+  // 'online' is decided by the server, which is the only place that knows who
+  // is sitting in a lobby right now. In-a-lobby friends sort to the front.
+  const sorted = friends.friends.slice().sort((a, b) =>
+    (a.online ? 0 : 1) - (b.online ? 0 : 1) || a.username.localeCompare(b.username));
+
+  const onCount = sorted.filter((p) => p.online).length;
+
+  host.innerHTML =
+    `<span class="strip-label">Your friends${onCount ? ' <em>' + onCount + ' playing</em>' : ''}</span>` +
+    '<div class="strip-people">' +
+    sorted.slice(0, 12).map((p) =>
+      `<span class="strip-person${p.online ? ' is-here' : ''}" title="${esc(p.username)}${p.online ? ' is in a lobby now' : ' is not playing'}">` +
+        avatarHtml(p.username, 'avatar-sm') +
+        `<span class="strip-name">${esc(p.username)}</span></span>`
+    ).join('') +
+    '</div>' +
+    (friends.incoming.length
+      ? `<button class="btn btn-sm" data-page="profile">${friends.incoming.length} request` +
+        `${friends.incoming.length === 1 ? '' : 's'}</button>`
+      : '');
+  host.hidden = false;
+
+  host.querySelectorAll('[data-page]').forEach((b) => {
+    b.onclick = () => openPage('profile');
+  });
+}
 
 // ------------------------------------------------------------------- boot ---
 
@@ -3823,11 +4484,43 @@ if (needsName()) {
 // show()/showChoice() yet to match the chrome to it.
 syncNavChrome();
 
-connect(() => {
+/* Requests arrive while you are looking at something else, so the dot has to
+ * find its own way onto the screen. Half a minute is unhurried on purpose:
+ * this is a friend request, not a message, and nothing is waiting on it. */
+setInterval(() => {
+  if (document.hidden) return; // a background tab has nobody to notify
+  refreshFriends();
+}, 30000);
+// Coming back to the tab is the moment a stale dot is most obvious.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshFriends();
+});
+
+/* Rejoining a lobby the tab was already in. This deliberately does nothing
+ * while the gate is up: the server's answer to a resume swaps the visible
+ * section to the lobby, which would drop somebody straight into a battle past
+ * a gate they have not passed - and with no confirmed name to play under. It
+ * happens when localStorage cannot be written but sessionStorage can, which is
+ * exactly the private-browsing case. passNameGate() calls this again once
+ * there is a player, so nothing is lost by waiting. */
+function tryResume() {
+  if (needsName()) return;
   const saved = sessionStorage.getItem('vibewars');
-  if (saved) {
-    const { lobbyId, token } = JSON.parse(saved);
-    sendMsg({ type: 'resume', lobbyId, token });
+  if (!saved) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(saved);
+  } catch (e) {
+    // A corrupt entry used to throw here and take loadLobbies() down with it.
+    sessionStorage.removeItem('vibewars');
+    return;
   }
+  if (parsed && parsed.lobbyId && parsed.token) {
+    sendMsg({ type: 'resume', lobbyId: parsed.lobbyId, token: parsed.token });
+  }
+}
+
+connect(() => {
+  tryResume();
   loadLobbies();
 });

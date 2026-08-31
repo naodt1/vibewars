@@ -1,0 +1,44 @@
+[
+  {
+    "key": "1-name",
+    "file": "1-name.jpg",
+    "w": 920,
+    "h": 929
+  },
+  {
+    "key": "2-model",
+    "file": "2-model.jpg",
+    "w": 1089,
+    "h": 1050
+  },
+  {
+    "key": "3-brief",
+    "file": "3-brief.png",
+    "w": 1908,
+    "h": 689
+  },
+  {
+    "key": "4-build",
+    "file": "4-build.jpg",
+    "w": 1800,
+    "h": 1323
+  },
+  {
+    "key": "5-judge",
+    "file": "5-judge.jpg",
+    "w": 1895,
+    "h": 1520
+  },
+  {
+    "key": "6-vote",
+    "file": "6-vote.png",
+    "w": 1891,
+    "h": 414
+  },
+  {
+    "key": "7-results",
+    "file": "7-results.png",
+    "w": 2000,
+    "h": 1499
+  }
+]

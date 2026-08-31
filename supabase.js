@@ -75,6 +75,21 @@ async function recordBattle(lobby, leaderboard) {
   }
 }
 
+/* What a finished round was worth, worked out from the result the server
+ * actually saw. This deliberately mirrors the client's own award rules for the
+ * parts the archive can verify - showing up, shipping, and where you placed -
+ * and leaves out the parts it cannot, like daily streaks, which live in one
+ * browser and are nobody else's business. Unlike the client's copy, nothing
+ * here is self-reported, so it is safe to rank strangers by. */
+function xpForResult(rank, dnf, autoSubmitted) {
+  let xp = 20;                                   // showing up and seeing it through
+  if (!dnf) xp += 30;                            // shipped something
+  if (rank === 1) xp += 100;
+  else if (rank === 2 || rank === 3) xp += 50;
+  if (!dnf && !autoSubmitted) xp += 10;          // in before the buzzer
+  return xp;
+}
+
 /** Freeze the finished battle into plain rows before any network call. */
 function takeSnapshot(lobby, leaderboard) {
   const p = lobby.prompt || {};
@@ -117,6 +132,11 @@ function takeSnapshot(lobby, leaderboard) {
       avg_aesthetic: Number(row.averages.aesthetic.toFixed(4)),
       avg_approach: Number(row.averages.approach.toFixed(4)),
       voter_count: row.voterCount,
+      xp: xpForResult(i + 1, row.dnf, !!player?.autoSubmitted),
+      // Self-reported by the player's client and already clamped server side;
+      // a player on their own key never routes usage through us at all.
+      tokens_in: player?.tokensIn || 0,
+      tokens_out: player?.tokensOut || 0,
     };
   });
 
@@ -219,4 +239,182 @@ async function recentBattles(limit = 10) {
   return data;
 }
 
-module.exports = { isEnabled, recordBattle, toolStandings, recentBattles, playerStandings };
+/* ------------------------------------------------------ players & friends --
+ * The player_id is the credential: whoever presents it is that player. Every
+ * function here takes it as the caller's identity and never accepts a
+ * username in its place, so knowing somebody's display name is never enough
+ * to act as them. */
+
+const MAX_USERNAME = 20;
+
+/** Trim, collapse whitespace, and cap. Returns null if nothing usable is left. */
+function cleanUsername(raw) {
+  const v = String(raw || '').trim().replace(/\s+/g, ' ').slice(0, MAX_USERNAME);
+  return v.length >= 2 ? v : null;
+}
+
+/** Register or update this player's row. Returns { player } or { error }. */
+async function upsertPlayer(playerId, username, avatar) {
+  if (!client) return { error: 'offline' };
+  const name = cleanUsername(username);
+  if (!name) return { error: 'too_short' };
+
+  const row = { player_id: playerId, username: name, last_seen: new Date().toISOString() };
+  if (Number.isInteger(avatar)) row.avatar = avatar;
+
+  const { data, error } = await client
+    .from('players')
+    .upsert(row, { onConflict: 'player_id' })
+    .select()
+    .single();
+
+  if (error) {
+    // 23505 is the case-insensitive username index. Report it as "taken"
+    // rather than a database error, since that is what it means to a player.
+    if (error.code === '23505') return { error: 'taken' };
+    console.error('supabase: upsertPlayer failed -', error.message);
+    return { error: 'failed' };
+  }
+  return { player: data };
+}
+
+/** Is this name free? Ignores the caller's own row so re-saving is not "taken". */
+async function usernameAvailable(username, playerId) {
+  if (!client) return { error: 'offline' };
+  const name = cleanUsername(username);
+  if (!name) return { available: false, reason: 'too_short' };
+  const { data, error } = await client
+    .from('players')
+    .select('player_id')
+    .ilike('username', name)
+    .limit(1);
+  if (error) return { error: 'failed' };
+  const hit = (data || [])[0];
+  return { available: !hit || hit.player_id === playerId, name };
+}
+
+/** Prefix search, for the add-friend box. Never returns player_ids. */
+async function searchPlayers(q, selfId, limit = 10) {
+  if (!client) return null;
+  const term = String(q || '').trim().slice(0, MAX_USERNAME);
+  if (term.length < 2) return [];
+  const { data, error } = await client
+    .from('players')
+    .select('player_id, username, avatar')
+    .ilike('username', term + '%')
+    .limit(limit + 1);
+  if (error) {
+    console.error('supabase: searchPlayers failed -', error.message);
+    return null;
+  }
+  return (data || []).filter((p) => p.player_id !== selfId).slice(0, limit);
+}
+
+/* Friendship rows are stored with the ids ordered, so the pair is one row
+ * rather than two that can disagree. */
+const pairKey = (x, y) => (x < y ? { a: x, b: y } : { a: y, b: x });
+
+async function sendFriendRequest(fromId, toUsername) {
+  if (!client) return { error: 'offline' };
+  const name = cleanUsername(toUsername);
+  if (!name) return { error: 'not_found' };
+
+  const { data: target } = await client
+    .from('players').select('player_id, username').ilike('username', name).limit(1);
+  const to = (target || [])[0];
+  if (!to) return { error: 'not_found' };
+  if (to.player_id === fromId) return { error: 'self' };
+
+  const { a, b } = pairKey(fromId, to.player_id);
+  const { data: already } = await client
+    .from('friendships').select('a').eq('a', a).eq('b', b).limit(1);
+  if ((already || []).length) return { error: 'already_friends' };
+
+  // If they already asked us, treat this as accepting rather than opening a
+  // second request pointing the other way, which would deadlock the pair.
+  const { data: incoming } = await client
+    .from('friend_requests').select('id')
+    .eq('from_id', to.player_id).eq('to_id', fromId).eq('status', 'pending').limit(1);
+  if ((incoming || []).length) {
+    return respondToRequest(fromId, incoming[0].id, true);
+  }
+
+  const { error } = await client
+    .from('friend_requests')
+    .insert({ from_id: fromId, to_id: to.player_id });
+  if (error) {
+    if (error.code === '23505') return { error: 'already_sent' };
+    console.error('supabase: sendFriendRequest failed -', error.message);
+    return { error: 'failed' };
+  }
+  return { sent: true, to: to.username };
+}
+
+/** Accept or decline. Only the recipient may answer, checked server-side. */
+async function respondToRequest(playerId, requestId, accept) {
+  if (!client) return { error: 'offline' };
+  const { data: reqs } = await client
+    .from('friend_requests').select('*').eq('id', requestId).limit(1);
+  const req = (reqs || [])[0];
+  if (!req) return { error: 'not_found' };
+  if (req.to_id !== playerId) return { error: 'not_yours' };
+  if (req.status !== 'pending') return { error: 'already_answered' };
+
+  await client
+    .from('friend_requests')
+    .update({ status: accept ? 'accepted' : 'declined', responded_at: new Date().toISOString() })
+    .eq('id', requestId);
+
+  if (accept) {
+    const { a, b } = pairKey(req.from_id, req.to_id);
+    // Ignore a duplicate here: both sides accepting at once is a race, not an
+    // error, and the pair is already friends either way.
+    await client.from('friendships').upsert({ a, b }, { onConflict: 'a,b' });
+  }
+  return { ok: true, accepted: !!accept };
+}
+
+async function removeFriend(playerId, otherId) {
+  if (!client) return { error: 'offline' };
+  const { a, b } = pairKey(playerId, otherId);
+  await client.from('friendships').delete().eq('a', a).eq('b', b);
+  return { ok: true };
+}
+
+/** Everything the friends panel needs in one round trip. */
+async function friendState(playerId) {
+  if (!client) return null;
+  const [{ data: links }, { data: incoming }, { data: outgoing }] = await Promise.all([
+    client.from('friendships').select('a, b').or(`a.eq.${playerId},b.eq.${playerId}`),
+    client.from('friend_requests').select('id, from_id, created_at').eq('to_id', playerId).eq('status', 'pending'),
+    client.from('friend_requests').select('id, to_id, created_at').eq('from_id', playerId).eq('status', 'pending'),
+  ]);
+
+  const friendIds = (links || []).map((l) => (l.a === playerId ? l.b : l.a));
+  const ids = [...new Set([
+    ...friendIds,
+    ...(incoming || []).map((r) => r.from_id),
+    ...(outgoing || []).map((r) => r.to_id),
+  ])];
+
+  let byId = {};
+  if (ids.length) {
+    const { data: people } = await client
+      .from('players').select('player_id, username, avatar').in('player_id', ids);
+    for (const p of people || []) byId[p.player_id] = p;
+  }
+  const named = (id) => byId[id] || { player_id: id, username: 'Unknown', avatar: 0 };
+
+  return {
+    friends: friendIds.map(named),
+    // Incoming requests are what the notification dot counts.
+    incoming: (incoming || []).map((r) => ({ id: r.id, from: named(r.from_id), at: r.created_at })),
+    outgoing: (outgoing || []).map((r) => ({ id: r.id, to: named(r.to_id), at: r.created_at })),
+  };
+}
+
+module.exports = {
+  isEnabled, recordBattle, toolStandings, recentBattles, playerStandings,
+  upsertPlayer, usernameAvailable, searchPlayers,
+  sendFriendRequest, respondToRequest, removeFriend, friendState,
+};
